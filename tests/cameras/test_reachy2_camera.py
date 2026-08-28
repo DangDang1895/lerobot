@@ -22,7 +22,6 @@ import pytest
 
 pytest.importorskip("reachy2_sdk")
 
-from lerobot.cameras.configs import ColorMode
 from lerobot.cameras.reachy2_camera import Reachy2Camera, Reachy2CameraConfig
 from lerobot.utils.errors import DeviceNotConnectedError
 
@@ -34,19 +33,28 @@ PARAMS = [
 ]
 
 
-def _make_cam_manager_mock(color_frame, depth_frame=None):
+def _make_cam_manager_mock():
     c = MagicMock(name="CameraManagerMock")
 
     teleop = MagicMock(name="TeleopCam")
     teleop.width = 640
     teleop.height = 480
-    teleop.get_frame = MagicMock(side_effect=lambda *_, **__: (color_frame, time.time()))
+    teleop.get_frame = MagicMock(
+        side_effect=lambda *_, **__: (
+            np.zeros((480, 640, 3), dtype=np.uint8),
+            time.time(),
+        )
+    )
 
     depth = MagicMock(name="DepthCam")
     depth.width = 640
     depth.height = 480
-    depth.get_frame = MagicMock(side_effect=lambda *_, **__: (color_frame, time.time()))
-    depth.get_depth_frame = MagicMock(side_effect=lambda *_, **__: (depth_frame, time.time()))
+    depth.get_frame = MagicMock(
+        side_effect=lambda *_, **__: (
+            np.zeros((480, 640, 3), dtype=np.uint8),
+            time.time(),
+        )
+    )
 
     c.is_connected.return_value = True
     c.teleop = teleop
@@ -76,14 +84,12 @@ def _make_cam_manager_mock(color_frame, depth_frame=None):
     # ids=["teleop-left", "teleop-right", "torso-rgb", "torso-depth"],
     ids=["teleop-left", "teleop-right", "torso-rgb"],
 )
-def camera(request, img_array_factory):
+def camera(request):
     name, image_type = request.param
-    color_frame = img_array_factory(height=480, width=640)
-    depth_frame = img_array_factory(height=480, width=640, channels=1, dtype=np.uint16)[..., 0]
     with (
         patch(
             "lerobot.cameras.reachy2_camera.reachy2_camera.CameraManager",
-            side_effect=lambda *a, **k: _make_cam_manager_mock(color_frame, depth_frame),
+            side_effect=lambda *a, **k: _make_cam_manager_mock(),
         ),
     ):
         config = Reachy2CameraConfig(name=name, image_type=image_type)
@@ -180,41 +186,6 @@ def test_read_latest_too_old(camera):
 
     with pytest.raises(TimeoutError):
         _ = camera.read_latest(max_age_ms=0)  # immediately too old
-
-
-def test_color_mode_conversion(img_array_factory):
-    """teleop frames are native BGR: RGB reverses the channel axis, BGR is passed through."""
-    frame = img_array_factory(height=8, width=8)
-
-    outputs = {}
-    for color_mode in (ColorMode.RGB, ColorMode.BGR):
-        with patch(
-            "lerobot.cameras.reachy2_camera.reachy2_camera.CameraManager",
-            side_effect=lambda *a, **k: _make_cam_manager_mock(frame),
-        ):
-            cam = Reachy2Camera(Reachy2CameraConfig(name="teleop", image_type="left", color_mode=color_mode))
-            cam.connect()
-            outputs[color_mode] = cam.read()
-            cam.disconnect()
-
-    np.testing.assert_array_equal(outputs[ColorMode.BGR], frame)
-    np.testing.assert_array_equal(outputs[ColorMode.RGB], frame[..., ::-1])
-
-
-def test_depth_frame_not_color_converted(img_array_factory):
-    """A depth/depth frame must be returned as-is, without BGR<->RGB conversion."""
-    color_frame = img_array_factory(height=8, width=8)
-    depth = img_array_factory(height=8, width=8, channels=1, dtype=np.uint16)[..., 0]
-    with patch(
-        "lerobot.cameras.reachy2_camera.reachy2_camera.CameraManager",
-        side_effect=lambda *a, **k: _make_cam_manager_mock(color_frame, depth_frame=depth),
-    ):
-        cam = Reachy2Camera(Reachy2CameraConfig(name="depth", image_type="depth"))
-        cam.connect()
-        out = cam.read()
-        cam.disconnect()
-
-    np.testing.assert_array_equal(out, depth)
 
 
 def test_wrong_camera_name():

@@ -16,5 +16,3 @@
 
 from .config_omx_leader import OmxLeaderConfig
 from .omx_leader import OmxLeader
-
-__all__ = ["OmxLeader", "OmxLeaderConfig"]

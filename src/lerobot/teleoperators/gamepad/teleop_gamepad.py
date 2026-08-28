@@ -14,21 +14,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import sys
 from enum import IntEnum
 from typing import Any
 
 import numpy as np
 
-from lerobot.lerobot_types import RobotAction
+from lerobot.processor import RobotAction
 from lerobot.utils.decorators import check_if_not_connected
 
 from ..teleoperator import Teleoperator
 from ..utils import TeleopEvents
 from .configuration_gamepad import GamepadTeleopConfig
-
-logger = logging.getLogger(__name__)
 
 
 class GripperAction(IntEnum):
@@ -59,13 +56,6 @@ class GamepadTeleop(Teleoperator):
 
         self.gamepad = None
 
-        self.hidapi_fallback = config.hidapi_fallback
-        if sys.platform == "darwin" and not self.hidapi_fallback:
-            logger.warning(
-                "On macOS, pygame may not reliably detect input from some controllers. "
-                "If you experience issues, set `hidapi_fallback=true`."
-            )
-
     @property
     def action_features(self) -> dict:
         if self.config.use_gripper:
@@ -86,7 +76,9 @@ class GamepadTeleop(Teleoperator):
         return {}
 
     def connect(self) -> None:
-        if self.hidapi_fallback:
+        # use HidApi for macos
+        if sys.platform == "darwin":
+            # NOTE: On macOS, pygame doesn’t reliably detect input from some controllers so we fall back to hidapi
             from .gamepad_utils import GamepadControllerHID as Gamepad
         else:
             from .gamepad_utils import GamepadController as Gamepad

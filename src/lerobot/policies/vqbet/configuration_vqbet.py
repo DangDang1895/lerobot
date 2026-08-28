@@ -18,8 +18,10 @@
 
 from dataclasses import dataclass, field
 
-from lerobot.configs import NormalizationMode, PreTrainedConfig
-from lerobot.optim import AdamConfig, VQBeTSchedulerConfig
+from lerobot.configs.policies import PreTrainedConfig
+from lerobot.configs.types import NormalizationMode
+from lerobot.optim.optimizers import AdamConfig
+from lerobot.optim.schedulers import VQBeTSchedulerConfig
 
 
 @PreTrainedConfig.register_subclass("vqbet")
@@ -97,8 +99,8 @@ class VQBeTConfig(PreTrainedConfig):
     vision_backbone: str = "resnet18"
     crop_shape: tuple[int, int] | None = (84, 84)
     crop_is_random: bool = True
-    pretrained_backbone_weights: str | None = "ResNet18_Weights.IMAGENET1K_V1"
-    use_group_norm: bool = False
+    pretrained_backbone_weights: str | None = None
+    use_group_norm: bool = True
     spatial_softmax_num_keypoints: int = 32
     # VQ-VAE
     n_vqvae_training_steps: int = 20000

@@ -22,7 +22,8 @@ from typing import Any
 
 import torch
 
-from lerobot.configs import PolicyFeature
+from lerobot.configs.types import PolicyFeature
+from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
 
 # NOTE: Configs need to be loaded for the client to be able to instantiate the policy config
 from lerobot.policies import (  # noqa: F401
@@ -35,7 +36,6 @@ from lerobot.policies import (  # noqa: F401
 )
 from lerobot.robots.robot import Robot
 from lerobot.utils.constants import OBS_IMAGES, OBS_STATE, OBS_STR
-from lerobot.utils.feature_utils import build_dataset_frame, hw_to_dataset_features
 from lerobot.utils.utils import init_logging
 
 Action = torch.Tensor
@@ -105,9 +105,8 @@ def raw_observation_to_observation(
 
 
 def prepare_image(image: torch.Tensor) -> torch.Tensor:
-    """Minimal preprocessing to turn RGB uint8 images to float32 in [0, 1], and create a memory-contiguous tensor"""
-    if image.dtype == torch.uint8:
-        image = image.type(torch.float32) / 255
+    """Minimal preprocessing to turn int8 images to float32 in [0, 1], and create a memory-contiguous tensor"""
+    image = image.type(torch.float32) / 255
     image = image.contiguous()
 
     return image

@@ -25,7 +25,7 @@ import torch
 from lerobot.policies.rtc.action_queue import ActionQueue
 from lerobot.policies.rtc.configuration_rtc import RTCConfig
 
-# Fixtures
+# ====================== Fixtures ======================
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def action_queue_rtc_disabled(rtc_config_disabled):
     return ActionQueue(rtc_config_disabled)
 
 
-# Initialization tests
+# ====================== Initialization Tests ======================
 
 
 def test_action_queue_initialization_rtc_enabled(rtc_config_enabled):
@@ -84,7 +84,7 @@ def test_action_queue_initialization_rtc_disabled(rtc_config_disabled):
     assert queue.cfg.enabled is False
 
 
-# get() tests
+# ====================== get() Tests ======================
 
 
 def test_get_returns_none_when_empty(action_queue_rtc_enabled):
@@ -108,35 +108,6 @@ def test_get_returns_actions_sequentially(action_queue_rtc_enabled, sample_actio
     action2 = action_queue_rtc_enabled.get()
     assert action2 is not None
     assert torch.equal(action2, sample_actions["processed"][1])
-
-
-def test_get_with_task_preserves_provenance_when_non_rtc_queue_drains(
-    action_queue_rtc_disabled, sample_actions
-):
-    """New task chunks append behind old actions without relabeling the old tail."""
-    actions_a = sample_actions["processed"][:2]
-    actions_b = sample_actions["processed"][2:4]
-    action_queue_rtc_disabled.merge(actions_a, actions_a, real_delay=0, task="task A")
-
-    first = action_queue_rtc_disabled.get_with_task()
-    assert first is not None
-    assert first[1] == "task A"
-
-    action_queue_rtc_disabled.merge(actions_b, actions_b, real_delay=0, task="task B")
-    remaining = [action_queue_rtc_disabled.get_with_task() for _ in range(3)]
-
-    assert [item[1] for item in remaining if item is not None] == ["task A", "task B", "task B"]
-
-
-def test_get_with_task_tracks_replacement_chunk_provenance(action_queue_rtc_enabled, sample_actions):
-    """RTC replacement changes provenance only when the new chunk enters the queue."""
-    actions_a = sample_actions["processed"][:2]
-    actions_b = sample_actions["processed"][2:4]
-    action_queue_rtc_enabled.merge(actions_a, actions_a, real_delay=0, task="task A")
-    assert action_queue_rtc_enabled.get_with_task()[1] == "task A"
-
-    action_queue_rtc_enabled.merge(actions_b, actions_b, real_delay=0, task="task B")
-    assert action_queue_rtc_enabled.get_with_task()[1] == "task B"
 
 
 def test_get_returns_none_after_exhaustion(action_queue_rtc_enabled, sample_actions):
@@ -165,7 +136,7 @@ def test_get_increments_last_index(action_queue_rtc_enabled, sample_actions):
     assert action_queue_rtc_enabled.last_index == 2
 
 
-# qsize() tests
+# ====================== qsize() Tests ======================
 
 
 def test_qsize_returns_zero_when_empty(action_queue_rtc_enabled):
@@ -196,7 +167,7 @@ def test_qsize_after_exhaustion(action_queue_rtc_enabled, sample_actions):
     assert action_queue_rtc_enabled.qsize() == 0
 
 
-# empty() tests
+# ====================== empty() Tests ======================
 
 
 def test_empty_returns_true_when_empty(action_queue_rtc_enabled):
@@ -231,7 +202,7 @@ def test_empty_after_full_consumption(action_queue_rtc_enabled, sample_actions):
     assert action_queue_rtc_enabled.empty() is True
 
 
-# get_action_index() tests
+# ====================== get_action_index() Tests ======================
 
 
 def test_get_action_index_initial_value(action_queue_rtc_enabled):
@@ -251,7 +222,7 @@ def test_get_action_index_after_consumption(action_queue_rtc_enabled, sample_act
     assert action_queue_rtc_enabled.get_action_index() == 3
 
 
-# get_left_over() tests
+# ====================== get_left_over() Tests ======================
 
 
 def test_get_left_over_returns_none_when_empty(action_queue_rtc_enabled):
@@ -298,7 +269,7 @@ def test_get_left_over_returns_empty_after_exhaustion(action_queue_rtc_enabled, 
     assert leftover.shape == (0, 6)
 
 
-# merge() with RTC enabled tests
+# ====================== merge() with RTC Enabled Tests ======================
 
 
 def test_merge_replaces_queue_when_rtc_enabled(action_queue_rtc_enabled, sample_actions):
@@ -365,7 +336,7 @@ def test_merge_with_large_delay(action_queue_rtc_enabled, sample_actions):
     assert action_queue_rtc_enabled.qsize() == 0
 
 
-# merge() with RTC disabled tests
+# ====================== merge() with RTC Disabled Tests ======================
 
 
 def test_merge_appends_when_rtc_disabled(action_queue_rtc_disabled, sample_actions):
@@ -431,7 +402,7 @@ def test_merge_first_call_with_rtc_disabled(action_queue_rtc_disabled, sample_ac
     assert action_queue_rtc_disabled.last_index == 0
 
 
-# merge() with different action shapes tests
+# ====================== merge() with Different Action Shapes Tests ======================
 
 
 def test_merge_with_different_action_dims():
@@ -460,14 +431,14 @@ def test_merge_with_different_lengths():
     assert queue.qsize() == 35
 
 
-# merge() delay validation tests
+# ====================== merge() Delay Validation Tests ======================
 
 
 def test_merge_validates_delay_consistency(action_queue_rtc_enabled, sample_actions, caplog):
     """Test merge() validates that real_delay matches action index difference."""
     import logging
 
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.WARNING)
 
     # Initialize queue
     action_queue_rtc_enabled.merge(sample_actions["short"], sample_actions["short"], real_delay=0)
@@ -476,7 +447,7 @@ def test_merge_validates_delay_consistency(action_queue_rtc_enabled, sample_acti
     for _ in range(5):
         action_queue_rtc_enabled.get()
 
-    # Merge with mismatched delay (should log the mismatch)
+    # Merge with mismatched delay (should log warning)
     # We consumed 5 actions, so index is 5. If we pass action_index_before_inference=0,
     # then indexes_diff=5, but if real_delay=3, it will warn
     action_queue_rtc_enabled.merge(
@@ -486,17 +457,15 @@ def test_merge_validates_delay_consistency(action_queue_rtc_enabled, sample_acti
         action_index_before_inference=0,
     )
 
-    # Check the mismatch was logged
+    # Check warning was logged
     assert "Indexes diff is not equal to real delay" in caplog.text
-    # A mismatch is routine bookkeeping: it must not compete with the loop's real warnings.
-    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
-def test_merge_no_log_when_delays_match(action_queue_rtc_enabled, sample_actions, caplog):
-    """Test merge() doesn't report a mismatch when delays are consistent."""
+def test_merge_no_warning_when_delays_match(action_queue_rtc_enabled, sample_actions, caplog):
+    """Test merge() doesn't warn when delays are consistent."""
     import logging
 
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.WARNING)
 
     # Initialize queue
     action_queue_rtc_enabled.merge(sample_actions["short"], sample_actions["short"], real_delay=0)
@@ -513,7 +482,7 @@ def test_merge_no_log_when_delays_match(action_queue_rtc_enabled, sample_actions
         action_index_before_inference=0,
     )
 
-    # Should not report a mismatch
+    # Should not have warning
     assert "Indexes diff is not equal to real delay" not in caplog.text
 
 
@@ -521,7 +490,7 @@ def test_merge_skips_validation_when_action_index_none(action_queue_rtc_enabled,
     """Test merge() skips delay validation when action_index_before_inference is None."""
     import logging
 
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.WARNING)
 
     action_queue_rtc_enabled.merge(sample_actions["short"], sample_actions["short"], real_delay=0)
 
@@ -536,11 +505,11 @@ def test_merge_skips_validation_when_action_index_none(action_queue_rtc_enabled,
         action_index_before_inference=None,
     )
 
-    # Should not log a mismatch (validation skipped)
+    # Should not warn (validation skipped)
     assert "Indexes diff is not equal to real delay" not in caplog.text
 
 
-# Thread safety tests
+# ====================== Thread Safety Tests ======================
 
 
 def test_get_is_thread_safe(action_queue_rtc_enabled, sample_actions):
@@ -652,7 +621,7 @@ def test_concurrent_get_and_merge(action_queue_rtc_disabled, sample_actions):
     assert consumed_count[0] <= 200
 
 
-# get_left_over() thread safety tests
+# ====================== get_left_over() Thread Safety Tests ======================
 
 
 def test_get_left_over_is_thread_safe(action_queue_rtc_enabled, sample_actions):
@@ -696,12 +665,12 @@ def test_get_left_over_is_thread_safe(action_queue_rtc_enabled, sample_actions):
     # Should not have errors
     assert len(errors) == 0
 
-    # Only liveness: concurrent appends make the snapshot order nondeterministic, so
-    # monotonicity cannot be checked.
+    # Leftovers should be monotonically decreasing or stable
+    # (as actions are consumed, leftover size decreases)
     assert len(leftovers) > 0
 
 
-# Edge cases tests
+# ====================== Edge Cases Tests ======================
 
 
 def test_queue_with_single_action(action_queue_rtc_enabled):
@@ -804,7 +773,7 @@ def test_qsize_with_none_queue(action_queue_rtc_enabled):
     assert action_queue_rtc_enabled.qsize() == 0
 
 
-# Integration tests
+# ====================== Integration Tests ======================
 
 
 def test_typical_rtc_workflow(action_queue_rtc_enabled, sample_actions):

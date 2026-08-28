@@ -4,19 +4,19 @@ from pathlib import Path
 from queue import Empty, Full
 
 import torch
+import torch.optim as optim
 
-from lerobot.datasets import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.utils import hw_to_dataset_features
 from lerobot.envs.configs import HILSerlProcessorConfig, HILSerlRobotEnvConfig
-from lerobot.policies import GaussianActorConfig
-from lerobot.policies.gaussian_actor.modeling_gaussian_actor import GaussianActorPolicy
-from lerobot.rewards.classifier.modeling_classifier import Classifier
-from lerobot.rl.algorithms.sac import SACAlgorithm, SACAlgorithmConfig
+from lerobot.policies.sac.configuration_sac import SACConfig
+from lerobot.policies.sac.modeling_sac import SACPolicy
+from lerobot.policies.sac.reward_model.modeling_classifier import Classifier
 from lerobot.rl.buffer import ReplayBuffer
 from lerobot.rl.gym_manipulator import make_robot_env
 from lerobot.robots.so_follower import SO100FollowerConfig
-from lerobot.teleoperators import TeleopEvents
 from lerobot.teleoperators.so_leader import SO100LeaderConfig
-from lerobot.utils.feature_utils import hw_to_dataset_features
+from lerobot.teleoperators.utils import TeleopEvents
 
 LOG_EVERY = 10
 SEND_EVERY = 10
@@ -28,7 +28,7 @@ def run_learner(
     transitions_queue: mp.Queue,
     parameters_queue: mp.Queue,
     shutdown_event: mp.Event,
-    policy_learner: GaussianActorPolicy,
+    policy_learner: SACPolicy,
     online_buffer: ReplayBuffer,
     offline_buffer: ReplayBuffer,
     lr: float = 3e-4,
@@ -40,9 +40,8 @@ def run_learner(
     policy_learner.train()
     policy_learner.to(device)
 
-    algo_config = SACAlgorithmConfig.from_policy_config(policy_learner.config)
-    algorithm = SACAlgorithm(policy=policy_learner, config=algo_config)
-    algorithm.make_optimizers_and_scheduler()
+    # Create Adam optimizer from scratch - simple and clean
+    optimizer = optim.Adam(policy_learner.parameters(), lr=lr)
 
     print(f"[LEARNER] Online buffer capacity: {online_buffer.capacity}")
     print(f"[LEARNER] Offline buffer capacity: {offline_buffer.capacity}")
@@ -84,26 +83,24 @@ def run_learner(
                 else:
                     batch[key] = online_batch[key]
 
-            def batch_iter(b=batch):
-                while True:
-                    yield b
+            loss, _ = policy_learner.forward(batch)
 
-            stats = algorithm.update(batch_iter())
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
             training_step += 1
 
             if training_step % LOG_EVERY == 0:
-                log_dict = stats.to_log_dict()
                 print(
-                    f"[LEARNER] Training step {training_step}, "
-                    f"critic_loss: {log_dict.get('critic', 'N/A'):.4f}, "
+                    f"[LEARNER] Training step {training_step}, Loss: {loss.item():.4f}, "
                     f"Buffers: Online={len(online_buffer)}, Offline={len(offline_buffer)}"
                 )
 
             # Send updated parameters to actor every 10 training steps
             if training_step % SEND_EVERY == 0:
                 try:
-                    weights = algorithm.get_weights()
-                    parameters_queue.put_nowait(weights)
+                    state_dict = {k: v.cpu() for k, v in policy_learner.state_dict().items()}
+                    parameters_queue.put_nowait(state_dict)
                     print("[LEARNER] Sent updated parameters to actor")
                 except Full:
                     # Missing write due to queue not being consumed (should happen rarely)
@@ -116,7 +113,7 @@ def run_actor(
     transitions_queue: mp.Queue,
     parameters_queue: mp.Queue,
     shutdown_event: mp.Event,
-    policy_actor: GaussianActorPolicy,
+    policy_actor: SACPolicy,
     reward_classifier: Classifier,
     env_cfg: HILSerlRobotEnvConfig,
     device: torch.device = "mps",
@@ -147,15 +144,15 @@ def run_actor(
 
             while step < MAX_STEPS_PER_EPISODE and not shutdown_event.is_set():
                 try:
-                    new_weights = parameters_queue.get_nowait()
-                    policy_actor.load_state_dict(new_weights)
+                    new_params = parameters_queue.get_nowait()
+                    policy_actor.load_state_dict(new_params)
                     print("[ACTOR] Updated policy parameters from learner")
                 except Empty:  # No new updated parameters available from learner, waiting
                     pass
 
-                # Get action from policy (returns full action: continuous + discrete)
+                # Get action from policy
                 policy_obs = make_policy_obs(obs, device=device)
-                action_tensor = policy_actor.select_action(policy_obs)
+                action_tensor = policy_actor.select_action(policy_obs)  # predicts a single action
                 action = action_tensor.squeeze(0).cpu().numpy()
 
                 # Step environment
@@ -264,14 +261,14 @@ def main():
     action_features = hw_to_dataset_features(env.robot.action_features, "action")
 
     # Create SAC policy for action selection
-    policy_cfg = GaussianActorConfig(
+    policy_cfg = SACConfig(
         device=device,
         input_features=obs_features,
         output_features=action_features,
     )
 
-    policy_actor = GaussianActorPolicy(policy_cfg)
-    policy_learner = GaussianActorPolicy(policy_cfg)
+    policy_actor = SACPolicy(policy_cfg)
+    policy_learner = SACPolicy(policy_cfg)
 
     demonstrations_repo_id = "lerobot/example_hil_serl_dataset"
     offline_dataset = LeRobotDataset(repo_id=demonstrations_repo_id)

@@ -19,7 +19,7 @@ import torch
 from safetensors.torch import save_file
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.transforms import (
+from lerobot.datasets.transforms import (
     ImageTransformConfig,
     ImageTransforms,
     ImageTransformsConfig,

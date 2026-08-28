@@ -13,9 +13,7 @@
 # limitations under the License.
 import pytest
 
-pytest.importorskip("datasets", reason="datasets is required (install lerobot[dataset])")
-
-from lerobot.datasets.feature_utils import (
+from lerobot.datasets.utils import (
     check_delta_timestamps,
     get_delta_indices,
 )

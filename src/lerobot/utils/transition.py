@@ -14,11 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import NotRequired, TypedDict
+from typing import TypedDict
 
 import torch
 
-from .constants import ACTION
+from lerobot.utils.constants import ACTION
 
 
 class Transition(TypedDict):
@@ -28,7 +28,7 @@ class Transition(TypedDict):
     next_state: dict[str, torch.Tensor]
     done: bool
     truncated: bool
-    complementary_info: NotRequired[dict[str, torch.Tensor | float | int] | None]
+    complementary_info: dict[str, torch.Tensor | float | int] | None = None
 
 
 def move_transition_to_device(transition: Transition, device: str = "cpu") -> Transition:

@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import json
 import logging
 import time
@@ -43,9 +44,7 @@ class LeKiwiHost:
         self.zmq_cmd_socket.bind(f"tcp://*:{config.port_zmq_cmd}")
 
         self.zmq_observation_socket = self.zmq_context.socket(zmq.PUSH)
-        # CONFLATE does not support multipart messages; a 2-deep send queue keeps
-        # near-latest-only semantics and sheds stale observations during stalls.
-        self.zmq_observation_socket.setsockopt(zmq.SNDHWM, 2)
+        self.zmq_observation_socket.setsockopt(zmq.CONFLATE, 1)
         self.zmq_observation_socket.bind(f"tcp://*:{config.port_zmq_observations}")
 
         self.connection_time_s = config.connection_time_s
@@ -100,23 +99,19 @@ def main(cfg: LeKiwiServerConfig):
 
             last_observation = robot.get_observation()
 
-            # Send one multipart message: a JSON header frame (state + camera
-            # order) followed by one raw JPEG frame per camera. Raw JPEG avoids
-            # the 33% base64 inflation of embedding binary data in JSON.
-            cam_keys = list(robot.cameras.keys())
-            jpeg_frames = []
-            for cam_key in cam_keys:
-                ret, jpeg = cv2.imencode(
-                    ".jpg", last_observation.pop(cam_key), [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+            # Encode ndarrays to base64 strings
+            for cam_key, _ in robot.cameras.items():
+                ret, buffer = cv2.imencode(
+                    ".jpg", last_observation[cam_key], [int(cv2.IMWRITE_JPEG_QUALITY), 90]
                 )
-                jpeg_frames.append(jpeg if ret else b"")
-            header = {"_cams": cam_keys, **last_observation}
+                if ret:
+                    last_observation[cam_key] = base64.b64encode(buffer).decode("utf-8")
+                else:
+                    last_observation[cam_key] = ""
 
             # Send the observation to the remote agent
             try:
-                host.zmq_observation_socket.send_multipart(
-                    [json.dumps(header).encode()] + jpeg_frames, flags=zmq.NOBLOCK
-                )
+                host.zmq_observation_socket.send_string(json.dumps(last_observation), flags=zmq.NOBLOCK)
             except zmq.Again:
                 logging.info("Dropping observation, no client connected")
 

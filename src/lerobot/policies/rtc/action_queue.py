@@ -27,7 +27,7 @@ from threading import Lock
 import torch
 from torch import Tensor
 
-from .configuration_rtc import RTCConfig
+from lerobot.policies.rtc.configuration_rtc import RTCConfig
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +42,6 @@ class ActionQueue:
     The queue operates in two modes:
     1. RTC-enabled: Replaces the entire queue with new actions, accounting for inference delay
     2. RTC-disabled: Appends new actions to the queue, maintaining continuity
-
-    Every queued action is labeled, in lockstep and under the same lock, with the task whose
-    inference produced its chunk; ``get_with_task`` returns that label.
 
     Args:
         cfg (RTCConfig): Configuration for Real-Time Chunking behavior.
@@ -63,7 +60,6 @@ class ActionQueue:
         """
         self.queue = None  # Processed actions for robot rollout
         self.original_queue = None  # Original actions for RTC
-        self._task_queue: list[str | None] | None = None
         self.lock = Lock()
         self.last_index = 0
         self.cfg = cfg
@@ -75,34 +71,13 @@ class ActionQueue:
             Tensor | None: The next action (action_dim,) or None if queue is empty.
                           Returns a clone to prevent external modifications.
         """
-        queued = self.get_with_task()
-        return None if queued is None else queued[0]
-
-    def get_with_task(self) -> tuple[Tensor, str | None] | None:
-        """Get the next action together with the task that generated its chunk."""
         with self.lock:
             if self.queue is None or self.last_index >= len(self.queue):
                 return None
 
-            if self._task_queue is not None and len(self._task_queue) != len(self.queue):
-                # A mismatch means some mutation broke the action/task lockstep.
-                raise RuntimeError(
-                    f"ActionQueue task labels out of sync with actions "
-                    f"({len(self._task_queue)} labels for {len(self.queue)} actions) — "
-                    "a queue mutation broke the action/task lockstep invariant"
-                )
             action = self.queue[self.last_index]
-            task = None if self._task_queue is None else self._task_queue[self.last_index]
             self.last_index += 1
-            return action.clone(), task
-
-    def clear(self) -> None:
-        """Clear queued actions and reset consumption index."""
-        with self.lock:
-            self.queue = None
-            self.original_queue = None
-            self._task_queue = None
-            self.last_index = 0
+            return action.clone()
 
     def qsize(self) -> int:
         """Get the number of remaining actions in the queue.
@@ -110,10 +85,10 @@ class ActionQueue:
         Returns:
             int: Number of unconsumed actions.
         """
-        with self.lock:
-            if self.queue is None:
-                return 0
-            return len(self.queue) - self.last_index
+        if self.queue is None:
+            return 0
+        length = len(self.queue)
+        return length - self.last_index
 
     def empty(self) -> bool:
         """Check if the queue is empty.
@@ -121,10 +96,11 @@ class ActionQueue:
         Returns:
             bool: True if no actions remain, False otherwise.
         """
-        with self.lock:
-            if self.queue is None:
-                return True
-            return len(self.queue) - self.last_index <= 0
+        if self.queue is None:
+            return True
+
+        length = len(self.queue)
+        return length - self.last_index <= 0
 
     def get_action_index(self) -> int:
         """Get the current action consumption index.
@@ -132,8 +108,7 @@ class ActionQueue:
         Returns:
             int: Index of the next action to be consumed.
         """
-        with self.lock:
-            return self.last_index
+        return self.last_index
 
     def get_left_over(self) -> Tensor | None:
         """Get leftover original actions for RTC prev_chunk_left_over.
@@ -148,28 +123,14 @@ class ActionQueue:
         with self.lock:
             if self.original_queue is None:
                 return None
-            return self.original_queue[self.last_index :].clone()
-
-    def get_processed_left_over(self) -> Tensor | None:
-        """Get leftover processed actions (the actions currently executed by the robot).
-
-        Returns:
-            Tensor | None: Remaining processed actions (remaining_steps, action_dim),
-                or None if no processed queue exists.
-        """
-        with self.lock:
-            if self.queue is None:
-                return None
-            return self.queue[self.last_index :].clone()
+            return self.original_queue[self.last_index :]
 
     def merge(
         self,
         original_actions: Tensor,
         processed_actions: Tensor,
         real_delay: int,
-        action_index_before_inference: int | None = None,
-        *,
-        task: str | None = None,
+        action_index_before_inference: int | None = 0,
     ):
         """Merge new actions into the queue.
 
@@ -182,24 +143,17 @@ class ActionQueue:
             processed_actions: Post-processed actions for robot (time_steps, action_dim).
             real_delay: Number of time steps of inference delay.
             action_index_before_inference: Index before inference started, for validation.
-            task: Instruction used to generate the incoming action chunk.
         """
         with self.lock:
-            delay = self._check_and_resolve_delays(real_delay, action_index_before_inference)
+            self._check_delays(real_delay, action_index_before_inference)
 
             if self.cfg.enabled:
-                self._replace_actions_queue(original_actions, processed_actions, delay, task)
+                self._replace_actions_queue(original_actions, processed_actions, real_delay)
                 return
 
-            self._append_actions_queue(original_actions, processed_actions, task)
+            self._append_actions_queue(original_actions, processed_actions)
 
-    def _replace_actions_queue(
-        self,
-        original_actions: Tensor,
-        processed_actions: Tensor,
-        real_delay: int,
-        task: str | None,
-    ):
+    def _replace_actions_queue(self, original_actions: Tensor, processed_actions: Tensor, real_delay: int):
         """Replace the queue with new actions (RTC mode).
 
         Discards the first `real_delay` actions since they correspond to the time
@@ -209,20 +163,17 @@ class ActionQueue:
             original_actions: Unprocessed actions from policy.
             processed_actions: Post-processed actions for robot.
             real_delay: Number of time steps to skip due to inference delay.
-            task: Instruction that generated the chunk; labels every queued action.
         """
-        clamped_delay = max(0, min(real_delay, len(original_actions), len(processed_actions)))
-        self.original_queue = original_actions[clamped_delay:].clone()
-        self.queue = processed_actions[clamped_delay:].clone()
-        self._task_queue = [task] * len(self.queue)
+        self.original_queue = original_actions[real_delay:].clone()
+        self.queue = processed_actions[real_delay:].clone()
 
         logger.debug(f"original_actions shape: {self.original_queue.shape}")
         logger.debug(f"processed_actions shape: {self.queue.shape}")
-        logger.debug(f"real_delay: {real_delay}, clamped_delay: {clamped_delay}")
+        logger.debug(f"real_delay: {real_delay}")
 
         self.last_index = 0
 
-    def _append_actions_queue(self, original_actions: Tensor, processed_actions: Tensor, task: str | None):
+    def _append_actions_queue(self, original_actions: Tensor, processed_actions: Tensor):
         """Append new actions to the queue (non-RTC mode).
 
         Removes already-consumed actions and appends new ones, maintaining
@@ -231,27 +182,21 @@ class ActionQueue:
         Args:
             original_actions: Unprocessed actions from policy.
             processed_actions: Post-processed actions for robot.
-            task: Instruction that generated the appended chunk; already-queued actions keep theirs.
         """
         if self.queue is None:
             self.original_queue = original_actions.clone()
             self.queue = processed_actions.clone()
-            self._task_queue = [task] * len(self.queue)
             return
 
-        existing_tasks = self._task_queue or [None] * len(self.queue)
         self.original_queue = torch.cat([self.original_queue, original_actions.clone()])
         self.original_queue = self.original_queue[self.last_index :]
 
         self.queue = torch.cat([self.queue, processed_actions.clone()])
         self.queue = self.queue[self.last_index :]
-        self._task_queue = existing_tasks[self.last_index :] + [task] * len(processed_actions)
 
         self.last_index = 0
 
-    def _check_and_resolve_delays(
-        self, real_delay: int, action_index_before_inference: int | None = None
-    ) -> int:
+    def _check_delays(self, real_delay: int, action_index_before_inference: int | None = None):
         """Validate that computed delays match expectations.
 
         Compares the delay computed from inference latency with the actual
@@ -260,20 +205,15 @@ class ActionQueue:
         Args:
             real_delay: Delay computed from inference latency.
             action_index_before_inference: Action index when inference started.
-
-        Returns:
-            int: Delay to use.
         """
-        effective_delay = max(0, real_delay)
+        if action_index_before_inference is None:
+            return
 
-        if action_index_before_inference is not None:
-            indexes_diff = max(0, self.last_index - action_index_before_inference)
-            if indexes_diff != real_delay:
-                logger.info(
-                    "Indexes diff is not equal to real delay. indexes_diff=%d, real_delay=%d",
-                    indexes_diff,
-                    real_delay,
-                )
-                return real_delay
-
-        return effective_delay
+        indexes_diff = self.last_index - action_index_before_inference
+        if indexes_diff != real_delay:
+            # Let's check that action index difference (real delay calculated based on action queue)
+            # is the same as delay calculated based on inference latency
+            logger.warning(
+                f"[ACTION_QUEUE] Indexes diff is not equal to real delay. "
+                f"Indexes diff: {indexes_diff}, real delay: {real_delay}"
+            )

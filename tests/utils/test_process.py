@@ -22,9 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
-pytest.importorskip("datasets", reason="datasets is required (install lerobot[dataset])")
-
-from lerobot.utils.process import ProcessSignalHandler  # noqa: E402
+from lerobot.rl.process import ProcessSignalHandler
 
 
 # Fixture to reset shutdown_event_counter and original signal handlers before and after each test

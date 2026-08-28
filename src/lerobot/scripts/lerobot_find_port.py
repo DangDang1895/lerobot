@@ -28,10 +28,7 @@ from pathlib import Path
 
 
 def find_available_ports():
-    from lerobot.utils.import_utils import require_package
-
-    require_package("pyserial", extra="hardware", import_name="serial")
-    from serial.tools import list_ports
+    from serial.tools import list_ports  # Part of pyserial library
 
     if platform.system() == "Windows":
         # List COM ports using pyserial

@@ -16,14 +16,10 @@ import math
 import pickle
 import time
 
-import pytest
+import numpy as np
+import torch
 
-pytest.importorskip("grpc")
-
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
-
-from lerobot.async_inference.helpers import (  # noqa: E402
+from lerobot.async_inference.helpers import (
     FPSTracker,
     TimedAction,
     TimedObservation,

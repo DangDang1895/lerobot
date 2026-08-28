@@ -15,6 +15,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
+from typing import TypeAlias
 
 from ..config import TeleoperatorConfig
 
@@ -29,12 +30,6 @@ class SOLeaderConfig:
     # Whether to use degrees for angles
     use_degrees: bool = True
 
-    # Number of extra attempts when a `sync_read` of the motors fails. Feetech buses can occasionally
-    # return a corrupted status packet ("Incorrect status packet!"), especially when several joints move
-    # at once, which otherwise aborts the teleoperation loop. Retries are immediate (no sleep) and only
-    # happen on failure, so the steady-state read cost is unchanged.
-    num_read_retries: int = 2
-
 
 @TeleoperatorConfig.register_subclass("so101_leader")
 @TeleoperatorConfig.register_subclass("so100_leader")
@@ -43,5 +38,5 @@ class SOLeaderTeleopConfig(TeleoperatorConfig, SOLeaderConfig):
     pass
 
 
-SO100LeaderConfig = SOLeaderTeleopConfig
-SO101LeaderConfig = SOLeaderTeleopConfig
+SO100LeaderConfig: TypeAlias = SOLeaderTeleopConfig
+SO101LeaderConfig: TypeAlias = SOLeaderTeleopConfig

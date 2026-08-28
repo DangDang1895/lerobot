@@ -15,7 +15,7 @@
 
 This script:
 1. Loads action chunks from LeRobotDataset (with episode sampling)
-2. Optionally applies relative transforms (relative vs absolute actions)
+2. Optionally applies delta transforms (relative vs absolute actions)
 3. Extracts specified action dimensions for encoding
 4. Applies normalization (MEAN_STD, MIN_MAX, QUANTILES, or other modes)
 5. Trains FAST tokenizer (BPE on DCT coefficients) on the action chunks
@@ -32,8 +32,8 @@ lerobot-train-tokenizer \
     --max_episodes=100 \
     --sample_fraction=0.1 \
     --encoded_dims="0:6" \
-    --relative_dims="0,1,2,3,4,5" \
-    --use_relative_transform=true \
+    --delta_dims="0,1,2,3,4,5" \
+    --use_delta_transform=true \
     --state_key="observation.state" \
     --normalization_mode="QUANTILES" \
     --vocab_size=1024 \
@@ -45,7 +45,6 @@ lerobot-train-tokenizer \
 """
 
 import json
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -61,12 +60,10 @@ if TYPE_CHECKING or _transformers_available:
 else:
     AutoProcessor = None
 
-from lerobot.configs import NormalizationMode, parser
-from lerobot.datasets import LeRobotDataset
+from lerobot.configs import parser
+from lerobot.configs.types import NormalizationMode
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.constants import ACTION, OBS_STATE
-from lerobot.utils.utils import init_logging
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -85,10 +82,10 @@ class TokenizerTrainingConfig:
     sample_fraction: float = 0.1
     # Comma-separated dimension ranges to encode (e.g., "0:6,7:23")
     encoded_dims: str = "0:6,7:23"
-    # Comma-separated dimension indices for relative transform (e.g., "0,1,2,3,4,5")
-    relative_dims: str | None = None
-    # Whether to apply relative transform (relative actions vs absolute actions)
-    use_relative_transform: bool = False
+    # Comma-separated dimension indices for delta transform (e.g., "0,1,2,3,4,5")
+    delta_dims: str | None = None
+    # Whether to apply delta transform (relative actions vs absolute actions)
+    use_delta_transform: bool = False
     # Dataset key for state observations (default: "observation.state")
     state_key: str = OBS_STATE
     # Normalization mode (MEAN_STD, MIN_MAX, QUANTILES, QUANTILE10, IDENTITY)
@@ -107,27 +104,25 @@ class TokenizerTrainingConfig:
     hub_private: bool = False
 
 
-def apply_relative_transform(
-    state: np.ndarray, actions: np.ndarray, relative_dims: list[int] | None
-) -> np.ndarray:
-    """Apply relative transform to specified dimensions.
+def apply_delta_transform(state: np.ndarray, actions: np.ndarray, delta_dims: list[int] | None) -> np.ndarray:
+    """Apply delta transform to specified dimensions.
 
     Args:
         state: Current state [D]
         actions: Future actions [D]
-        relative_dims: List of dimension indices to apply relative transform to
+        delta_dims: List of dimension indices to apply delta transform to
 
     Returns:
         Transformed actions [D]
     """
-    if relative_dims is None or len(relative_dims) == 0:
+    if delta_dims is None or len(delta_dims) == 0:
         return actions
 
-    relative_actions = actions.copy()
-    for dim in relative_dims:
-        relative_actions[dim] = actions[dim] - state[dim]
+    delta_actions = actions.copy()
+    for dim in delta_dims:
+        delta_actions[dim] = actions[dim] - state[dim]
 
-    return relative_actions
+    return delta_actions
 
 
 def apply_normalization(
@@ -190,7 +185,7 @@ def apply_normalization(
 
 def process_episode(args):
     """Process single episode and return action chunks."""
-    dataset, ep_idx, action_horizon, relative_dims, sample_fraction, state_key, use_relative_transform = args
+    dataset, ep_idx, action_horizon, delta_dims, sample_fraction, state_key, use_delta_transform = args
 
     try:
         # get episode info
@@ -209,15 +204,15 @@ def process_episode(args):
 
         for abs_idx in range(from_idx, to_idx):
             # map absolute index to relative index if needed
-            if dataset.reader._absolute_to_relative_idx is not None:
-                if abs_idx not in dataset.reader._absolute_to_relative_idx:
+            if dataset._absolute_to_relative_idx is not None:
+                if abs_idx not in dataset._absolute_to_relative_idx:
                     # this episode's frames aren't in the filtered dataset
                     return None
-                rel_idx = dataset.reader._absolute_to_relative_idx[abs_idx]
+                rel_idx = dataset._absolute_to_relative_idx[abs_idx]
             else:
                 rel_idx = abs_idx
 
-            frame = dataset.get_raw_item(rel_idx)
+            frame = dataset.hf_dataset[rel_idx]
 
             # get state (could be from observation.state or other state key)
             if state_key in frame:
@@ -227,7 +222,7 @@ def process_episode(args):
                     else np.array(frame[state_key])
                 )
             else:
-                # if no state key, use zeros (no relative transform)
+                # if no state key, use zeros (no delta transform)
                 state = np.zeros_like(
                     frame[ACTION].numpy() if torch.is_tensor(frame[ACTION]) else np.array(frame[ACTION])
                 )
@@ -248,18 +243,18 @@ def process_episode(args):
             current_state = states[i]  # First state in chunk
             future_absolute_actions = actions[i : i + action_horizon]
 
-            if use_relative_transform:
+            if use_delta_transform:
                 # relative actions
-                relative_chunk = np.zeros_like(future_absolute_actions)
+                delta_chunk = np.zeros_like(future_absolute_actions)
                 for t in range(action_horizon):
-                    relative_chunk[t] = apply_relative_transform(
+                    delta_chunk[t] = apply_delta_transform(
                         current_state,
                         future_absolute_actions[t],
-                        relative_dims,
+                        delta_dims,
                     )
-                action_chunks.append(relative_chunk)
+                action_chunks.append(delta_chunk)
             else:
-                # absolute actions (no relative transform)
+                # absolute actions (no delta)
                 action_chunks.append(future_absolute_actions)
 
         if len(action_chunks) == 0:
@@ -278,8 +273,11 @@ def process_episode(args):
 
         return action_chunks
 
-    except Exception:
-        logger.exception("Error processing episode %s", ep_idx)
+    except Exception as e:
+        print(f"Error processing episode {ep_idx}: {e}")
+        import traceback
+
+        traceback.print_exc()
         return None
 
 
@@ -301,21 +299,21 @@ def train_fast_tokenizer(
     Returns:
         Trained FAST tokenizer
     """
-    logger.info(f"Training FAST tokenizer on {len(action_chunks)} action chunks...")
-    logger.info(f"Action chunk shape: {action_chunks.shape}")
-    logger.info(f"Vocab size: {vocab_size}")
-    logger.info(f"DCT scale: {scale}")
+    print(f"Training FAST tokenizer on {len(action_chunks)} action chunks...")
+    print(f"Action chunk shape: {action_chunks.shape}")
+    print(f"Vocab size: {vocab_size}")
+    print(f"DCT scale: {scale}")
 
     # download the tokenizer source code (not pretrained weights)
     # we'll train a new tokenizer on our own data
-    base_tokenizer = AutoProcessor.from_pretrained("lerobot/fast-action-tokenizer", trust_remote_code=True)
+    base_tokenizer = AutoProcessor.from_pretrained("physical-intelligence/fast", trust_remote_code=True)
 
     # convert action_chunks array to list of arrays (expected by .fit())
     action_data_list = [action_chunks[i] for i in range(len(action_chunks))]
 
     # train the new tokenizer on our action data using .fit()
     # this trains the BPE tokenizer on DCT coefficients
-    logger.info("Training new tokenizer (this may take a few minutes)...")
+    print("Training new tokenizer (this may take a few minutes)...")
     tokenizer = base_tokenizer.fit(
         action_data_list,
         scale=scale,
@@ -323,21 +321,21 @@ def train_fast_tokenizer(
         time_horizon=action_chunks.shape[1],  # action_horizon
         action_dim=action_chunks.shape[2],  # encoded dimensions
     )
-    logger.info("✓ Tokenizer training complete!")
+    print("✓ Tokenizer training complete!")
 
     # validate it works
     sample_chunk = action_chunks[0]
     encoded = tokenizer(sample_chunk[None])[0]
     if isinstance(encoded, list):
         encoded = np.array(encoded)
-    logger.info(f"Sample encoding: {len(encoded)} tokens for chunk shape {sample_chunk.shape}")
+    print(f"Sample encoding: {len(encoded)} tokens for chunk shape {sample_chunk.shape}")
 
     return tokenizer
 
 
 def compute_compression_stats(tokenizer, action_chunks: np.ndarray):
     """Compute compression statistics."""
-    logger.info("\nComputing compression statistics...")
+    print("\nComputing compression statistics...")
 
     # sample for stats (use max 1000 chunks for speed)
     sample_size = min(1000, len(action_chunks))
@@ -367,12 +365,12 @@ def compute_compression_stats(tokenizer, action_chunks: np.ndarray):
         "max_token_length": float(np.max(token_lengths)),
     }
 
-    logger.info("Compression Statistics:")
-    logger.info(f"  Average compression ratio: {stats['compression_ratio']:.2f}x")
-    logger.info(f"  Mean token length: {stats['mean_token_length']:.1f}")
-    logger.info(f"  P99 token length: {stats['p99_token_length']:.0f}")
-    logger.info(f"  Min token length: {stats['min_token_length']:.0f}")
-    logger.info(f"  Max token length: {stats['max_token_length']:.0f}")
+    print("Compression Statistics:")
+    print(f"  Average compression ratio: {stats['compression_ratio']:.2f}x")
+    print(f"  Mean token length: {stats['mean_token_length']:.1f}")
+    print(f"  P99 token length: {stats['p99_token_length']:.0f}")
+    print(f"  Min token length: {stats['min_token_length']:.0f}")
+    print(f"  Max token length: {stats['max_token_length']:.0f}")
 
     return stats
 
@@ -386,9 +384,9 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
         cfg: TokenizerTrainingConfig dataclass with all configuration parameters
     """
     # load dataset
-    logger.info(f"Loading dataset: {cfg.repo_id}")
+    print(f"Loading dataset: {cfg.repo_id}")
     dataset = LeRobotDataset(repo_id=cfg.repo_id, root=cfg.root)
-    logger.info(f"Dataset loaded: {dataset.num_episodes} episodes, {dataset.num_frames} frames")
+    print(f"Dataset loaded: {dataset.num_episodes} episodes, {dataset.num_frames} frames")
 
     # parse normalization mode
     try:
@@ -398,7 +396,7 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
             f"Invalid normalization_mode: {cfg.normalization_mode}. "
             f"Must be one of: {', '.join([m.value for m in NormalizationMode])}"
         ) from err
-    logger.info(f"Normalization mode: {norm_mode.value}")
+    print(f"Normalization mode: {norm_mode.value}")
 
     # parse encoded dimensions
     encoded_dim_ranges = []
@@ -407,48 +405,45 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
         encoded_dim_ranges.append((start, end))
 
     total_encoded_dims = sum(end - start for start, end in encoded_dim_ranges)
-    logger.info(f"Encoding {total_encoded_dims} dimensions: {cfg.encoded_dims}")
+    print(f"Encoding {total_encoded_dims} dimensions: {cfg.encoded_dims}")
 
-    # parse relative dimensions
-    relative_dim_list = None
-    if cfg.relative_dims is not None and cfg.relative_dims.strip():
-        relative_dim_list = [int(d.strip()) for d in cfg.relative_dims.split(",")]
-        logger.info(f"Relative dimensions: {relative_dim_list}")
+    # parse delta dimensions
+    delta_dim_list = None
+    if cfg.delta_dims is not None and cfg.delta_dims.strip():
+        delta_dim_list = [int(d.strip()) for d in cfg.delta_dims.split(",")]
+        print(f"Delta dimensions: {delta_dim_list}")
     else:
-        logger.info("No relative dimensions specified")
+        print("No delta dimensions specified")
 
-    logger.info(f"Use relative transform: {cfg.use_relative_transform}")
-    if cfg.use_relative_transform and (relative_dim_list is None or len(relative_dim_list) == 0):
-        logger.warning(
-            "Warning: use_relative_transform=True but no relative_dims specified. "
-            "No relative transform will be applied."
-        )
+    print(f"Use delta transform: {cfg.use_delta_transform}")
+    if cfg.use_delta_transform and (delta_dim_list is None or len(delta_dim_list) == 0):
+        print("Warning: use_delta_transform=True but no delta_dims specified. No delta will be applied.")
 
-    logger.info(f"Action horizon: {cfg.action_horizon}")
-    logger.info(f"State key: {cfg.state_key}")
+    print(f"Action horizon: {cfg.action_horizon}")
+    print(f"State key: {cfg.state_key}")
 
     # determine episodes to process
     num_episodes = dataset.num_episodes
     if cfg.max_episodes is not None:
         num_episodes = min(cfg.max_episodes, num_episodes)
 
-    logger.info(f"Processing {num_episodes} episodes...")
+    print(f"Processing {num_episodes} episodes...")
 
     # process episodes sequentially (to avoid pickling issues with dataset)
     all_chunks = []
     for ep_idx in range(num_episodes):
         if ep_idx % 10 == 0:
-            logger.info(f"  Processing episode {ep_idx}/{num_episodes}...")
+            print(f"  Processing episode {ep_idx}/{num_episodes}...")
 
         chunks = process_episode(
             (
                 dataset,
                 ep_idx,
                 cfg.action_horizon,
-                relative_dim_list,
+                delta_dim_list,
                 cfg.sample_fraction,
                 cfg.state_key,
-                cfg.use_relative_transform,
+                cfg.use_delta_transform,
             )
         )
         if chunks is not None:
@@ -456,19 +451,19 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
 
     # concatenate all chunks
     all_chunks = np.concatenate(all_chunks, axis=0)
-    logger.info(f"Collected {len(all_chunks)} action chunks")
+    print(f"Collected {len(all_chunks)} action chunks")
 
     # extract only encoded dimensions FIRST (before normalization)
     encoded_chunks = []
     for start, end in encoded_dim_ranges:
         encoded_chunks.append(all_chunks[:, :, start:end])
     encoded_chunks = np.concatenate(encoded_chunks, axis=-1)  # [N, H, D_encoded]
-    logger.info(f"Extracted {encoded_chunks.shape[-1]} encoded dimensions")
+    print(f"Extracted {encoded_chunks.shape[-1]} encoded dimensions")
 
     # apply normalization to encoded dimensions
-    logger.info("\nBefore normalization - overall stats:")
-    logger.info(f"  Min: {np.min(encoded_chunks):.4f}, Max: {np.max(encoded_chunks):.4f}")
-    logger.info(f"  Mean: {np.mean(encoded_chunks):.4f}, Std: {np.std(encoded_chunks):.4f}")
+    print("\nBefore normalization - overall stats:")
+    print(f"  Min: {np.min(encoded_chunks):.4f}, Max: {np.max(encoded_chunks):.4f}")
+    print(f"  Mean: {np.mean(encoded_chunks):.4f}, Std: {np.std(encoded_chunks):.4f}")
 
     # get normalization stats from dataset
     norm_stats = dataset.meta.stats
@@ -490,9 +485,9 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
                     encoded_stats[stat_name] = stat_array[encoded_dim_indices]
 
         if encoded_stats:
-            logger.info(f"\nNormalization stats for encoded dimensions (mode: {norm_mode.value}):")
+            print(f"\nNormalization stats for encoded dimensions (mode: {norm_mode.value}):")
             for stat_name, stat_values in encoded_stats.items():
-                logger.info(
+                print(
                     f"  {stat_name}: shape={stat_values.shape}, "
                     f"range=[{np.min(stat_values):.4f}, {np.max(stat_values):.4f}]"
                 )
@@ -500,27 +495,27 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
             # apply normalization based on mode
             try:
                 encoded_chunks = apply_normalization(encoded_chunks, encoded_stats, norm_mode, eps=1e-8)
-                logger.info(f"\nApplied {norm_mode.value} normalization")
+                print(f"\nApplied {norm_mode.value} normalization")
             except ValueError as e:
-                logger.warning(f"Warning: {e}. Using raw actions without normalization.")
+                print(f"Warning: {e}. Using raw actions without normalization.")
 
-            logger.info("\nAfter normalization - overall stats:")
-            logger.info(f"  Min: {np.min(encoded_chunks):.4f}, Max: {np.max(encoded_chunks):.4f}")
-            logger.info(f"  Mean: {np.mean(encoded_chunks):.4f}, Std: {np.std(encoded_chunks):.4f}")
+            print("\nAfter normalization - overall stats:")
+            print(f"  Min: {np.min(encoded_chunks):.4f}, Max: {np.max(encoded_chunks):.4f}")
+            print(f"  Mean: {np.mean(encoded_chunks):.4f}, Std: {np.std(encoded_chunks):.4f}")
 
-            logger.info("\nPer-dimension stats (after normalization):")
+            print("\nPer-dimension stats (after normalization):")
             for d in range(encoded_chunks.shape[-1]):
                 dim_data = encoded_chunks[:, :, d]
-                logger.info(
+                print(
                     f"  Dim {d}: min={np.min(dim_data):7.4f}, max={np.max(dim_data):7.4f}, "
                     f"mean={np.mean(dim_data):7.4f}, std={np.std(dim_data):7.4f}"
                 )
         else:
-            logger.warning("Warning: Could not extract stats for encoded dimensions, using raw actions")
+            print("Warning: Could not extract stats for encoded dimensions, using raw actions")
     else:
-        logger.warning("Warning: No normalization stats found in dataset, using raw actions")
+        print("Warning: No normalization stats found in dataset, using raw actions")
 
-    logger.info(f"Encoded chunks shape: {encoded_chunks.shape}")
+    print(f"Encoded chunks shape: {encoded_chunks.shape}")
 
     # train FAST tokenizer
     tokenizer = train_fast_tokenizer(
@@ -549,9 +544,9 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
         "encoded_dims": cfg.encoded_dims,
         "encoded_dim_ranges": encoded_dim_ranges,
         "total_encoded_dims": total_encoded_dims,
-        "relative_dims": cfg.relative_dims,
-        "relative_dim_list": relative_dim_list,
-        "use_relative_transform": cfg.use_relative_transform,
+        "delta_dims": cfg.delta_dims,
+        "delta_dim_list": delta_dim_list,
+        "use_delta_transform": cfg.use_delta_transform,
         "state_key": cfg.state_key,
         "normalization_mode": norm_mode.value,
         "action_horizon": cfg.action_horizon,
@@ -562,8 +557,8 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
     with open(output_path / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
-    logger.info(f"\nSaved FAST tokenizer to {output_path}")
-    logger.info(f"Metadata: {json.dumps(metadata, indent=2)}")
+    print(f"\nSaved FAST tokenizer to {output_path}")
+    print(f"Metadata: {json.dumps(metadata, indent=2)}")
 
     # push to Hugging Face Hub if requested
     if cfg.push_to_hub:
@@ -571,10 +566,10 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
         hub_repo_id = cfg.hub_repo_id
         if hub_repo_id is None:
             hub_repo_id = output_path.name
-            logger.info(f"\nNo hub_repo_id provided, using: {hub_repo_id}")
+            print(f"\nNo hub_repo_id provided, using: {hub_repo_id}")
 
-        logger.info(f"\nPushing tokenizer to Hugging Face Hub: {hub_repo_id}")
-        logger.info(f"   Private: {cfg.hub_private}")
+        print(f"\nPushing tokenizer to Hugging Face Hub: {hub_repo_id}")
+        print(f"   Private: {cfg.hub_private}")
 
         try:
             # use the tokenizer's push_to_hub method
@@ -594,15 +589,14 @@ def train_tokenizer(cfg: TokenizerTrainingConfig):
                 commit_message="Upload tokenizer metadata",
             )
 
-            logger.info(f"Successfully pushed tokenizer to: https://huggingface.co/{hub_repo_id}")
+            print(f"Successfully pushed tokenizer to: https://huggingface.co/{hub_repo_id}")
         except Exception as e:
-            logger.error(f"Error pushing to hub: {e}")
-            logger.error("   Make sure you're logged in with `huggingface-cli login`")
+            print(f"Error pushing to hub: {e}")
+            print("   Make sure you're logged in with `huggingface-cli login`")
 
 
 def main():
     """CLI entry point that parses arguments and runs the tokenizer training."""
-    init_logging()
     train_tokenizer()
 
 

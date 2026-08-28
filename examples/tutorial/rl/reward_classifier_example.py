@@ -1,7 +1,8 @@
 import torch
 
-from lerobot.datasets import LeRobotDataset
-from lerobot.rewards import RewardClassifierConfig, make_reward_model, make_reward_pre_post_processors
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.policies.factory import make_policy, make_pre_post_processors
+from lerobot.policies.sac.reward_model.configuration_classifier import RewardClassifierConfig
 
 
 def main():
@@ -22,10 +23,10 @@ def main():
         model_name="microsoft/resnet-18",
     )
 
-    # Make reward model, preprocessor, and optimizer
-    reward_model = make_reward_model(config, dataset_stats=dataset.meta.stats)
-    optimizer = config.get_optimizer_preset().build(reward_model.parameters())
-    preprocessor, _ = make_reward_pre_post_processors(config, dataset_stats=dataset.meta.stats)
+    # Make policy, preprocessor, and optimizer
+    policy = make_policy(config, ds_meta=dataset.meta)
+    optimizer = config.get_optimizer_preset().build(policy.parameters())
+    preprocessor, _ = make_pre_post_processors(policy_cfg=config, dataset_stats=dataset.meta.stats)
 
     classifier_id = "<user>/reward_classifier_hil_serl_example"
 
@@ -42,7 +43,7 @@ def main():
             batch = preprocessor(batch)
 
             # Forward pass
-            loss, output_dict = reward_model.forward(batch)
+            loss, output_dict = policy.forward(batch)
 
             # Backward pass and optimization
             optimizer.zero_grad()
@@ -58,8 +59,8 @@ def main():
 
     print("Training finished!")
 
-    # You can now save the trained reward model.
-    reward_model.push_to_hub(classifier_id)
+    # You can now save the trained policy.
+    policy.push_to_hub(classifier_id)
 
 
 if __name__ == "__main__":

@@ -27,10 +27,9 @@ import math
 import torch
 from torch import Tensor
 
-from lerobot.configs import RTCAttentionSchedule
-
-from .configuration_rtc import RTCConfig
-from .debug_tracker import Tracker
+from lerobot.configs.types import RTCAttentionSchedule
+from lerobot.policies.rtc.configuration_rtc import RTCConfig
+from lerobot.policies.rtc.debug_tracker import Tracker
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +41,7 @@ class RTCProcessor:
     prefix attention, and adaptive chunk processing.
     """
 
-    def __init__(self, rtc_config: RTCConfig, *, trained_mode_supported: bool = False):
-        if rtc_config.enabled and rtc_config.mode == "trained" and not trained_mode_supported:
-            raise ValueError(
-                "RTC mode='trained' requires a PI05-compatible checkpoint trained with "
-                "rtc_training_max_delay > 0."
-            )
+    def __init__(self, rtc_config: RTCConfig):
         self.rtc_config = rtc_config
 
         self.tracker = None

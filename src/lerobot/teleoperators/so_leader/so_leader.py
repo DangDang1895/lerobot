@@ -16,6 +16,7 @@
 
 import logging
 import time
+from typing import TypeAlias
 
 from lerobot.motors import Motor, MotorCalibration, MotorNormMode
 from lerobot.motors.feetech import (
@@ -59,7 +60,7 @@ class SOLeader(Teleoperator):
 
     @property
     def feedback_features(self) -> dict[str, type]:
-        return self.action_features
+        return {}
 
     @property
     def is_connected(self) -> bool:
@@ -130,12 +131,6 @@ class SOLeader(Teleoperator):
         for motor in self.bus.motors:
             self.bus.write("Operating_Mode", motor, OperatingMode.POSITION.value)
 
-    def enable_torque(self) -> None:
-        self.bus.enable_torque()
-
-    def disable_torque(self) -> None:
-        self.bus.disable_torque()
-
     def setup_motors(self) -> None:
         for motor in reversed(self.bus.motors):
             input(f"Connect the controller board to the '{motor}' motor only and press enter.")
@@ -145,17 +140,15 @@ class SOLeader(Teleoperator):
     @check_if_not_connected
     def get_action(self) -> dict[str, float]:
         start = time.perf_counter()
-        action = self.bus.sync_read("Present_Position", num_retry=self.config.num_read_retries)
+        action = self.bus.sync_read("Present_Position")
         action = {f"{motor}.pos": val for motor, val in action.items()}
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read action: {dt_ms:.1f}ms")
         return action
 
-    @check_if_not_connected
     def send_feedback(self, feedback: dict[str, float]) -> None:
-        goals = {k.removesuffix(".pos"): v for k, v in feedback.items() if k.endswith(".pos")}
-        if goals:
-            self.bus.sync_write("Goal_Position", goals)
+        # TODO: Implement force feedback
+        raise NotImplementedError
 
     @check_if_not_connected
     def disconnect(self) -> None:
@@ -163,5 +156,5 @@ class SOLeader(Teleoperator):
         logger.info(f"{self} disconnected.")
 
 
-SO100Leader = SOLeader
-SO101Leader = SOLeader
+SO100Leader: TypeAlias = SOLeader
+SO101Leader: TypeAlias = SOLeader

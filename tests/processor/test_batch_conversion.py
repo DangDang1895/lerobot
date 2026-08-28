@@ -16,8 +16,7 @@
 
 import torch
 
-from lerobot.lerobot_types import TransitionKey
-from lerobot.processor import DataProcessorPipeline
+from lerobot.processor import DataProcessorPipeline, TransitionKey
 from lerobot.processor.converters import batch_to_transition, transition_to_batch
 from lerobot.utils.constants import ACTION, DONE, OBS_IMAGE, OBS_PREFIX, OBS_STATE, REWARD, TRUNCATED
 

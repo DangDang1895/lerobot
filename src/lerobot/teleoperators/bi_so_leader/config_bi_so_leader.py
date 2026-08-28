@@ -16,8 +16,9 @@
 
 from dataclasses import dataclass
 
+from lerobot.teleoperators.so_leader import SOLeaderConfig
+
 from ..config import TeleoperatorConfig
-from ..so_leader import SOLeaderConfig
 
 
 @TeleoperatorConfig.register_subclass("bi_so_leader")

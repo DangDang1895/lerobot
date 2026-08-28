@@ -20,18 +20,16 @@ import pandas as pd
 import pytest
 from datasets import Dataset
 
-from lerobot.datasets.io_utils import (
-    get_hf_dataset_size_in_mb,
-    write_episodes,
-    write_info,
-    write_stats,
-    write_tasks,
-)
 from lerobot.datasets.utils import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_DATA_FILE_SIZE_IN_MB,
     DEFAULT_DATA_PATH,
+    get_hf_dataset_size_in_mb,
     update_chunk_file_indices,
+    write_episodes,
+    write_info,
+    write_stats,
+    write_tasks,
 )
 
 

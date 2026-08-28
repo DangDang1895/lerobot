@@ -16,10 +16,9 @@
 
 import time
 
-from lerobot.lerobot_types import RobotAction, RobotObservation
 from lerobot.model.kinematics import RobotKinematics
-from lerobot.processor import (
-    RobotProcessorPipeline,
+from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline
+from lerobot.processor.converters import (
     robot_action_observation_to_transition,
     robot_action_to_transition,
     transition_to_robot_action,

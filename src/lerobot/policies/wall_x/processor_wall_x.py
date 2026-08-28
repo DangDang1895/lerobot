@@ -18,17 +18,21 @@ from typing import Any
 
 import torch
 
-from lerobot.configs import PipelineFeatureType, PolicyFeature
+from lerobot.configs.types import PipelineFeatureType, PolicyFeature
+from lerobot.policies.wall_x.configuration_wall_x import WallXConfig
 from lerobot.processor import (
+    AddBatchDimensionProcessorStep,
     ComplementaryDataProcessorStep,
+    DeviceProcessorStep,
+    NormalizerProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStepRegistry,
-    make_default_policy_processor_steps,
-    make_policy_processor_pipelines,
+    RenameObservationsProcessorStep,
+    UnnormalizerProcessorStep,
 )
-
-from .configuration_wall_x import WallXConfig
+from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
+from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
 
 def make_wall_x_pre_post_processors(
@@ -59,22 +63,37 @@ def make_wall_x_pre_post_processors(
         A tuple containing the configured pre-processor and post-processor pipelines
     """
 
-    steps = make_default_policy_processor_steps(config, dataset_stats)
-
     input_steps = [
-        steps.rename_observations,
-        steps.add_batch_dim,
+        RenameObservationsProcessorStep(rename_map={}),
+        AddBatchDimensionProcessorStep(),
         WallXTaskProcessor(),  # Process task description
-        steps.normalize,
-        steps.to_device,
+        NormalizerProcessorStep(
+            features={**config.input_features, **config.output_features},
+            norm_map=config.normalization_mapping,
+            stats=dataset_stats,
+        ),
+        DeviceProcessorStep(device=config.device),
     ]
 
     output_steps = [
-        steps.unnormalize,
-        steps.to_cpu,
+        UnnormalizerProcessorStep(
+            features=config.output_features, norm_map=config.normalization_mapping, stats=dataset_stats
+        ),
+        DeviceProcessorStep(device="cpu"),
     ]
 
-    return make_policy_processor_pipelines(input_steps=input_steps, output_steps=output_steps)
+    return (
+        PolicyProcessorPipeline[dict[str, Any], dict[str, Any]](
+            steps=input_steps,
+            name=POLICY_PREPROCESSOR_DEFAULT_NAME,
+        ),
+        PolicyProcessorPipeline[PolicyAction, PolicyAction](
+            steps=output_steps,
+            name=POLICY_POSTPROCESSOR_DEFAULT_NAME,
+            to_transition=policy_action_to_transition,
+            to_output=transition_to_policy_action,
+        ),
+    )
 
 
 @ProcessorStepRegistry.register(name="wall_x_task_processor")

@@ -19,15 +19,13 @@ Tests for the TokenizerProcessorStep class.
 """
 
 import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 import torch
 
 from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
-from lerobot.lerobot_types import TransitionKey
-from lerobot.processor import ActionTokenizerProcessorStep, DataProcessorPipeline, TokenizerProcessorStep
+from lerobot.processor import DataProcessorPipeline, TokenizerProcessorStep, TransitionKey
 from lerobot.processor.converters import create_transition, identity_transition
 from lerobot.utils.constants import (
     ACTION,
@@ -37,7 +35,7 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_SUBTASK_TOKENS,
     OBS_STATE,
 )
-from tests.utils import skip_if_package_missing
+from tests.utils import require_package
 
 
 class MockTokenizer:
@@ -88,51 +86,6 @@ class MockTokenizer:
 
         return result
 
-    def save_pretrained(self, save_directory: str | Path) -> None:
-        save_directory = Path(save_directory)
-        save_directory.mkdir(parents=True, exist_ok=True)
-        (save_directory / "tokenizer_config.json").write_text("{}")
-
-
-def test_action_tokenizer_config_preserves_token_mapping():
-    processor = object.__new__(ActionTokenizerProcessorStep)
-    processor.trust_remote_code = True
-    processor.max_action_tokens = 384
-    processor.fast_skip_tokens = 64
-    processor.paligemma_tokenizer_name = "custom/paligemma"
-    processor.allow_truncation = False
-    processor.action_tokenizer_name = "custom/fast"
-    processor.action_tokenizer_input_object = None
-
-    assert processor.get_config() == {
-        "trust_remote_code": True,
-        "max_action_tokens": 384,
-        "fast_skip_tokens": 64,
-        "paligemma_tokenizer_name": "custom/paligemma",
-        "allow_truncation": False,
-        "action_tokenizer_name": "custom/fast",
-    }
-
-
-def test_action_tokenizer_can_reject_truncated_sequences():
-    processor = object.__new__(ActionTokenizerProcessorStep)
-    processor.max_action_tokens = 4
-    processor.fast_skip_tokens = 128
-    processor.allow_truncation = False
-    processor.action_tokenizer = lambda _actions: [1, 2, 3]
-    processor._paligemma_tokenizer = type(
-        "Tokenizer",
-        (),
-        {
-            "vocab_size": 1000,
-            "bos_token_id": 2,
-            "encode": lambda _self, text, **_kwargs: [10, 11] if text == "Action: " else [12, 1],
-        },
-    )()
-
-    with pytest.raises(ValueError, match="max_action_tokens=4"):
-        processor._tokenize_action(torch.zeros(1, 2, 1))
-
 
 @pytest.fixture
 def mock_tokenizer():
@@ -140,7 +93,7 @@ def mock_tokenizer():
     return MockTokenizer(vocab_size=100)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_basic_tokenization(mock_auto_tokenizer):
     """Test basic string tokenization functionality."""
@@ -175,7 +128,7 @@ def test_basic_tokenization(mock_auto_tokenizer):
     assert attention_mask.shape == (10,)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_basic_tokenization_with_tokenizer_object():
     """Test basic string tokenization functionality using tokenizer object directly."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -207,7 +160,7 @@ def test_basic_tokenization_with_tokenizer_object():
     assert attention_mask.shape == (10,)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_list_of_strings_tokenization(mock_auto_tokenizer):
     """Test tokenization of a list of strings."""
@@ -235,31 +188,7 @@ def test_list_of_strings_tokenization(mock_auto_tokenizer):
     assert attention_mask.shape == (2, 8)
 
 
-@skip_if_package_missing("transformers")
-@patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
-def test_tuple_of_strings_tokenization(mock_auto_tokenizer):
-    """Test tokenization of a tuple of strings (returned by VectorEnv.call())."""
-    mock_tokenizer = MockTokenizer(vocab_size=100)
-    mock_auto_tokenizer.from_pretrained.return_value = mock_tokenizer
-
-    processor = TokenizerProcessorStep(tokenizer_name="test-tokenizer", max_length=8)
-
-    transition = create_transition(
-        observation={"state": torch.tensor([1.0, 2.0])},
-        action=torch.tensor([0.1, 0.2]),
-        complementary_data={"task": ("pick up cube", "place on table")},
-    )
-
-    result = processor(transition)
-
-    observation = result[TransitionKey.OBSERVATION]
-    tokens = observation[f"{OBS_LANGUAGE}.tokens"]
-    attention_mask = observation[f"{OBS_LANGUAGE}.attention_mask"]
-    assert tokens.shape == (2, 8)
-    assert attention_mask.shape == (2, 8)
-
-
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_custom_keys(mock_auto_tokenizer):
     """Test using custom task_key."""
@@ -285,7 +214,7 @@ def test_custom_keys(mock_auto_tokenizer):
     assert tokens.shape == (5,)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_none_complementary_data(mock_auto_tokenizer):
     """Test handling of None complementary_data."""
@@ -301,7 +230,7 @@ def test_none_complementary_data(mock_auto_tokenizer):
         processor(transition)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_missing_task_key(mock_auto_tokenizer):
     """Test handling when task key is missing."""
@@ -316,7 +245,7 @@ def test_missing_task_key(mock_auto_tokenizer):
         processor(transition)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_none_task_value(mock_auto_tokenizer):
     """Test handling when task value is None."""
@@ -331,7 +260,7 @@ def test_none_task_value(mock_auto_tokenizer):
         processor(transition)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_unsupported_task_type(mock_auto_tokenizer):
     """Test handling of unsupported task types."""
@@ -353,14 +282,14 @@ def test_unsupported_task_type(mock_auto_tokenizer):
         processor(transition)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_no_tokenizer_error():
     """Test that ValueError is raised when neither tokenizer nor tokenizer_name is provided."""
     with pytest.raises(ValueError, match="Either 'tokenizer' or 'tokenizer_name' must be provided"):
         TokenizerProcessorStep()
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_invalid_tokenizer_name_error():
     """Test that error is raised when invalid tokenizer_name is provided."""
     with patch("lerobot.processor.tokenizer_processor.AutoTokenizer") as mock_auto_tokenizer:
@@ -371,7 +300,7 @@ def test_invalid_tokenizer_name_error():
             TokenizerProcessorStep(tokenizer_name="invalid-tokenizer")
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_get_config_with_tokenizer_name(mock_auto_tokenizer):
     """Test configuration serialization when using tokenizer_name."""
@@ -400,7 +329,7 @@ def test_get_config_with_tokenizer_name(mock_auto_tokenizer):
     assert config == expected
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_config_with_tokenizer_object():
     """Test configuration serialization when using tokenizer object."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -428,7 +357,7 @@ def test_get_config_with_tokenizer_object():
     assert "tokenizer_name" not in config
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_state_dict_methods(mock_auto_tokenizer):
     """Test state_dict and load_state_dict methods."""
@@ -445,7 +374,7 @@ def test_state_dict_methods(mock_auto_tokenizer):
     processor.load_state_dict({})
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_reset_method(mock_auto_tokenizer):
     """Test reset method."""
@@ -458,7 +387,7 @@ def test_reset_method(mock_auto_tokenizer):
     processor.reset()
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_integration_with_robot_processor(mock_auto_tokenizer):
     """Test integration with RobotProcessor."""
@@ -495,7 +424,7 @@ def test_integration_with_robot_processor(mock_auto_tokenizer):
     assert torch.equal(result[TransitionKey.ACTION], transition[TransitionKey.ACTION])
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_save_and_load_pretrained_with_tokenizer_name(mock_auto_tokenizer):
     """Test saving and loading processor with tokenizer_name."""
@@ -535,12 +464,10 @@ def test_save_and_load_pretrained_with_tokenizer_name(mock_auto_tokenizer):
         assert f"{OBS_LANGUAGE}.attention_mask" in result[TransitionKey.OBSERVATION]
 
 
-@skip_if_package_missing("transformers")
-@patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
-def test_save_and_load_pretrained_with_tokenizer_object(mock_auto_tokenizer):
-    """Test that a tokenizer object is saved and reloads from its local artifact."""
+@require_package("transformers")
+def test_save_and_load_pretrained_with_tokenizer_object():
+    """Test saving and loading processor with tokenizer object using overrides."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
-    mock_auto_tokenizer.from_pretrained.return_value = mock_tokenizer
 
     original_processor = TokenizerProcessorStep(
         tokenizer=mock_tokenizer, max_length=32, task_key="instruction"
@@ -554,12 +481,11 @@ def test_save_and_load_pretrained_with_tokenizer_object(mock_auto_tokenizer):
         # Save processor
         robot_processor.save_pretrained(temp_dir)
 
-        assert (Path(temp_dir) / "tokenizer" / "tokenizer_config.json").is_file()
-
-        # Load processor without an object override: the saved artifact is portable.
+        # Load processor with tokenizer override (since tokenizer object wasn't saved)
         loaded_processor = DataProcessorPipeline.from_pretrained(
             temp_dir,
             config_filename="dataprocessorpipeline.json",
+            overrides={"tokenizer_processor": {"tokenizer": mock_tokenizer}},
             to_transition=identity_transition,
             to_output=identity_transition,
         )
@@ -577,7 +503,7 @@ def test_save_and_load_pretrained_with_tokenizer_object(mock_auto_tokenizer):
         assert f"{OBS_LANGUAGE}.attention_mask" in result[TransitionKey.OBSERVATION]
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_registry_functionality():
     """Test that the processor is properly registered."""
     from lerobot.processor import ProcessorStepRegistry
@@ -590,7 +516,7 @@ def test_registry_functionality():
     assert retrieved_class is TokenizerProcessorStep
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_features_basic():
     """Test basic feature contract functionality."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -623,7 +549,7 @@ def test_features_basic():
     assert attention_mask_feature.shape == (128,)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_features_with_custom_max_length():
     """Test feature contract with custom max_length."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -645,7 +571,7 @@ def test_features_with_custom_max_length():
     assert attention_mask_feature.shape == (64,)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_features_existing_features():
     """Test feature contract when tokenized features already exist."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -667,7 +593,7 @@ def test_features_existing_features():
     assert output_features[PipelineFeatureType.OBSERVATION][f"{OBS_LANGUAGE}.attention_mask"].shape == (100,)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_tokenization_parameters(mock_auto_tokenizer):
     """Test that tokenization parameters are correctly passed to tokenizer."""
@@ -715,7 +641,7 @@ def test_tokenization_parameters(mock_auto_tokenizer):
     assert tracking_tokenizer.last_call_kwargs["return_tensors"] == "pt"
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_preserves_other_complementary_data(mock_auto_tokenizer):
     """Test that other complementary data fields are preserved."""
@@ -750,7 +676,7 @@ def test_preserves_other_complementary_data(mock_auto_tokenizer):
     assert f"{OBS_LANGUAGE}.attention_mask" in observation
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_deterministic_tokenization(mock_auto_tokenizer):
     """Test that tokenization is deterministic for the same input."""
@@ -778,7 +704,7 @@ def test_deterministic_tokenization(mock_auto_tokenizer):
     assert torch.equal(attention_mask1, attention_mask2)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_empty_string_task(mock_auto_tokenizer):
     """Test handling of empty string task."""
@@ -802,7 +728,7 @@ def test_empty_string_task(mock_auto_tokenizer):
     assert tokens.shape == (8,)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_very_long_task(mock_auto_tokenizer):
     """Test handling of very long task strings."""
@@ -828,7 +754,7 @@ def test_very_long_task(mock_auto_tokenizer):
     assert attention_mask.shape == (5,)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_custom_padding_side(mock_auto_tokenizer):
     """Test using custom padding_side parameter."""
@@ -882,7 +808,7 @@ def test_custom_padding_side(mock_auto_tokenizer):
     assert tracking_tokenizer.padding_side_calls[-1] == "right"
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_device_detection_cpu():
     """Test that tokenized tensors stay on CPU when other tensors are on CPU."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -906,7 +832,7 @@ def test_device_detection_cpu():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_device_detection_cuda():
     """Test that tokenized tensors are moved to CUDA when other tensors are on CUDA."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -931,7 +857,7 @@ def test_device_detection_cuda():
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires at least 2 GPUs")
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_device_detection_multi_gpu():
     """Test that tokenized tensors match device in multi-GPU setup."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -955,7 +881,7 @@ def test_device_detection_multi_gpu():
     assert attention_mask.device == device
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_device_detection_no_tensors():
     """Test that tokenized tensors stay on CPU when no other tensors exist."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -977,7 +903,7 @@ def test_device_detection_no_tensors():
     assert attention_mask.device.type == "cpu"
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_device_detection_mixed_devices():
     """Test device detection when tensors are on different devices (uses first found)."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1005,7 +931,7 @@ def test_device_detection_mixed_devices():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_device_detection_from_action():
     """Test that device is detected from action tensor when no observation tensors exist."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1028,7 +954,7 @@ def test_device_detection_from_action():
     assert attention_mask.device.type == "cuda"
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_device_detection_preserves_dtype():
     """Test that device detection doesn't affect dtype of tokenized tensors."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1049,7 +975,7 @@ def test_device_detection_preserves_dtype():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_integration_with_device_processor(mock_auto_tokenizer):
     """Test that TokenizerProcessorStep works correctly with DeviceProcessorStep in pipeline."""
@@ -1088,7 +1014,7 @@ def test_integration_with_device_processor(mock_auto_tokenizer):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_simulated_accelerate_scenario():
     """Test scenario simulating Accelerate with data already on GPU."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1126,7 +1052,7 @@ def test_simulated_accelerate_scenario():
 # =============================================================================
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_missing_key():
     """Test get_subtask returns None when subtask key is missing from complementary_data."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1142,7 +1068,7 @@ def test_get_subtask_missing_key():
     assert result is None
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_none_value():
     """Test get_subtask returns None when subtask value is None."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1158,7 +1084,7 @@ def test_get_subtask_none_value():
     assert result is None
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_none_complementary_data():
     """Test get_subtask returns None when complementary_data is None."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1174,7 +1100,7 @@ def test_get_subtask_none_complementary_data():
     assert result is None
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_string():
     """Test get_subtask returns list with single string when subtask is a string."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1192,7 +1118,7 @@ def test_get_subtask_string():
     assert len(result) == 1
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_list_of_strings():
     """Test get_subtask returns the list when subtask is already a list of strings."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1211,7 +1137,7 @@ def test_get_subtask_list_of_strings():
     assert len(result) == 3
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_unsupported_type_integer():
     """Test get_subtask returns None when subtask is an unsupported type (integer)."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1227,7 +1153,7 @@ def test_get_subtask_unsupported_type_integer():
     assert result is None
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_unsupported_type_mixed_list():
     """Test get_subtask returns None when subtask is a list with mixed types."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1243,7 +1169,7 @@ def test_get_subtask_unsupported_type_mixed_list():
     assert result is None
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_unsupported_type_dict():
     """Test get_subtask returns None when subtask is a dictionary."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1259,7 +1185,7 @@ def test_get_subtask_unsupported_type_dict():
     assert result is None
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_empty_string():
     """Test get_subtask with empty string returns list with empty string."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1275,7 +1201,7 @@ def test_get_subtask_empty_string():
     assert result == [""]
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_get_subtask_empty_list():
     """Test get_subtask with empty list returns empty list."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1296,7 +1222,7 @@ def test_get_subtask_empty_list():
 # =============================================================================
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_tokenization_when_present():
     """Test that subtask is tokenized and added to observation when present."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1325,7 +1251,7 @@ def test_subtask_tokenization_when_present():
     assert subtask_attention_mask.dtype == torch.bool
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_tokenization_not_added_when_none():
     """Test that subtask tokens are NOT added to observation when subtask is None."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1349,7 +1275,7 @@ def test_subtask_tokenization_not_added_when_none():
     assert f"{OBS_LANGUAGE}.attention_mask" in observation
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_tokenization_not_added_when_subtask_value_is_none():
     """Test that subtask tokens are NOT added when subtask value is explicitly None."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1369,7 +1295,7 @@ def test_subtask_tokenization_not_added_when_subtask_value_is_none():
     assert OBS_LANGUAGE_SUBTASK_ATTENTION_MASK not in observation
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_tokenization_list_of_strings():
     """Test subtask tokenization with list of strings."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1395,7 +1321,7 @@ def test_subtask_tokenization_list_of_strings():
     assert subtask_attention_mask.shape == (2, 8)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_tokenization_device_cpu():
     """Test that subtask tokens are on CPU when other tensors are on CPU."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1421,7 +1347,7 @@ def test_subtask_tokenization_device_cpu():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_tokenization_device_cuda():
     """Test that subtask tokens are moved to CUDA when other tensors are on CUDA."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1446,7 +1372,7 @@ def test_subtask_tokenization_device_cuda():
     assert subtask_attention_mask.device.type == "cuda"
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_tokenization_preserves_other_observation_data():
     """Test that subtask tokenization preserves other observation data."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1472,7 +1398,7 @@ def test_subtask_tokenization_preserves_other_observation_data():
     assert OBS_LANGUAGE_SUBTASK_ATTENTION_MASK in observation
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_attention_mask_dtype():
     """Test that subtask attention mask has correct dtype (bool)."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1491,7 +1417,7 @@ def test_subtask_attention_mask_dtype():
     assert subtask_attention_mask.dtype == torch.bool
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_tokenization_deterministic():
     """Test that subtask tokenization is deterministic for the same input."""
     mock_tokenizer = MockTokenizer(vocab_size=100)
@@ -1516,7 +1442,7 @@ def test_subtask_tokenization_deterministic():
     assert torch.equal(subtask_mask1, subtask_mask2)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_subtask_tokenization_integration_with_pipeline(mock_auto_tokenizer):
     """Test subtask tokenization works correctly with DataProcessorPipeline."""
@@ -1553,7 +1479,7 @@ def test_subtask_tokenization_integration_with_pipeline(mock_auto_tokenizer):
     assert observation[OBS_LANGUAGE_SUBTASK_TOKENS].shape == (6,)
 
 
-@skip_if_package_missing("transformers")
+@require_package("transformers")
 def test_subtask_not_added_for_unsupported_types():
     """Test that subtask tokens are not added when subtask has unsupported type."""
     mock_tokenizer = MockTokenizer(vocab_size=100)

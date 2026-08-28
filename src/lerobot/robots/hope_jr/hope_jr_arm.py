@@ -18,13 +18,13 @@ import logging
 import time
 from functools import cached_property
 
-from lerobot.cameras import make_cameras_from_configs
-from lerobot.lerobot_types import RobotAction, RobotObservation
+from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.motors import Motor, MotorNormMode
 from lerobot.motors.calibration_gui import RangeFinderGUI
 from lerobot.motors.feetech import (
     FeetechMotorsBus,
 )
+from lerobot.processor import RobotAction, RobotObservation
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 
 from ..robot import Robot
@@ -66,14 +66,9 @@ class HopeJrArm(Robot):
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
-        features: dict[str, tuple] = {}
-        for cam in self.cameras:
-            cfg = self.config.cameras[cam]
-            if getattr(cfg, "use_rgb", True):
-                features[cam] = (cfg.height, cfg.width, 3)
-            if getattr(cfg, "use_depth", False):
-                features[f"{cam}_depth"] = (cfg.height, cfg.width, 1)
-        return features
+        return {
+            cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3) for cam in self.cameras
+        }
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -144,17 +139,10 @@ class HopeJrArm(Robot):
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
-            if getattr(cam, "use_rgb", True):
-                start = time.perf_counter()
-                obs_dict[cam_key] = cam.read_latest()
-                dt_ms = (time.perf_counter() - start) * 1e3
-                logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
-
-            if getattr(cam, "use_depth", False):
-                start = time.perf_counter()
-                obs_dict[f"{cam_key}_depth"] = cam.read_latest_depth()
-                dt_ms = (time.perf_counter() - start) * 1e3
-                logger.debug(f"{self} read {cam_key} depth: {dt_ms:.1f}ms")
+            start = time.perf_counter()
+            obs_dict[cam_key] = cam.read_latest()
+            dt_ms = (time.perf_counter() - start) * 1e3
+            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
         return obs_dict
 

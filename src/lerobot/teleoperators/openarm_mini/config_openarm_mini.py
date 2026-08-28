@@ -19,21 +19,12 @@ from dataclasses import dataclass
 from ..config import TeleoperatorConfig
 
 
-@dataclass
-class OpenArmMiniConfigBase:
-    """Base configuration for the OpenArm Mini teleoperator (Feetech STS3215, 7DOF + gripper)."""
-
-    # Serial port for the Feetech bus (e.g., "/dev/ttyUSB0").
-    port: str
-
-    # Side of the arm: "left" or "right". Controls per-joint direction flips applied
-    # during readout. If `None`, no flipping is applied.
-    side: str | None = None
-
-    use_degrees: bool = True
-
-
 @TeleoperatorConfig.register_subclass("openarm_mini")
 @dataclass
-class OpenArmMiniConfig(TeleoperatorConfig, OpenArmMiniConfigBase):
-    pass
+class OpenArmMiniConfig(TeleoperatorConfig):
+    """Configuration for OpenArm Mini teleoperator with Feetech motors (dual arms)."""
+
+    port_right: str = "/dev/ttyUSB0"
+    port_left: str = "/dev/ttyUSB1"
+
+    use_degrees: bool = True

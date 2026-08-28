@@ -28,18 +28,11 @@ import json
 import logging
 import time
 from threading import Event, Lock, Thread
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
-
-from lerobot.utils.import_utils import _zmq_available, require_package
-
-if TYPE_CHECKING or _zmq_available:
-    import zmq
-else:
-    zmq = None
 
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 from lerobot.utils.errors import DeviceNotConnectedError
@@ -81,8 +74,8 @@ class ZMQCamera(Camera):
     """
 
     def __init__(self, config: ZMQCameraConfig):
-        require_package("pyzmq", extra="pyzmq-dep", import_name="zmq")
         super().__init__(config)
+        import zmq
 
         self.config = config
         self.server_address = config.server_address
@@ -124,6 +117,8 @@ class ZMQCamera(Camera):
         logger.info(f"Connecting to {self}...")
 
         try:
+            import zmq
+
             self.context = zmq.Context()
             self.socket = self.context.socket(zmq.SUB)
             self.socket.setsockopt_string(zmq.SUBSCRIBE, "")
@@ -185,8 +180,11 @@ class ZMQCamera(Camera):
 
         try:
             message = self.socket.recv_string()
-        except zmq.Again as e:
-            raise TimeoutError(f"{self} timeout after {self.timeout_ms}ms") from e
+        except Exception as e:
+            # Check for ZMQ timeout (EAGAIN/Again) without requiring global zmq import
+            if type(e).__name__ == "Again":
+                raise TimeoutError(f"{self} timeout after {self.timeout_ms}ms") from e
+            raise
 
         # Decode JSON message
         data = json.loads(message)
@@ -246,12 +244,11 @@ class ZMQCamera(Camera):
         """
         Internal loop run by the background thread for asynchronous reading.
         """
-        stop_event = self.stop_event
-        if stop_event is None:
+        if self.stop_event is None:
             raise RuntimeError(f"{self}: stop_event is not initialized.")
 
         failure_count = 0
-        while not stop_event.is_set():
+        while not self.stop_event.is_set():
             try:
                 frame = self._read_from_hardware()
                 capture_time = time.perf_counter()
@@ -293,8 +290,6 @@ class ZMQCamera(Camera):
 
         if self.thread is not None and self.thread.is_alive():
             self.thread.join(timeout=2.0)
-            if self.thread.is_alive():
-                logger.warning(f"{self} read thread did not terminate within timeout.")
 
         self.thread = None
         self.stop_event = None

@@ -18,21 +18,23 @@ from typing import Any
 
 import torch
 
-from lerobot.configs import PipelineFeatureType, PolicyFeature
+from lerobot.configs.types import PipelineFeatureType, PolicyFeature
+from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.processor import (
-    AbsoluteActionsProcessorStep,
+    AddBatchDimensionProcessorStep,
     ComplementaryDataProcessorStep,
+    DeviceProcessorStep,
+    NormalizerProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStep,
     ProcessorStepRegistry,
-    RelativeActionsProcessorStep,
+    RenameObservationsProcessorStep,
     TokenizerProcessorStep,
-    make_default_policy_processor_steps,
-    make_policy_processor_pipelines,
+    UnnormalizerProcessorStep,
 )
-
-from .configuration_pi0 import PI0Config
+from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
+from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
 
 @ProcessorStepRegistry.register(name="pi0_new_line_processor")
@@ -124,18 +126,10 @@ def make_pi0_pre_post_processors(
         A tuple containing the configured pre-processor and post-processor pipelines.
     """
 
-    relative_step = RelativeActionsProcessorStep(
-        enabled=config.use_relative_actions,
-        exclude_joints=getattr(config, "relative_exclude_joints", []),
-        action_names=getattr(config, "action_feature_names", None),
-    )
-
-    steps = make_default_policy_processor_steps(config, dataset_stats)
-
-    # OpenPI order: raw → relative → normalize → model → unnormalize → absolute
+    # Add remaining processors
     input_steps: list[ProcessorStep] = [
-        steps.rename_observations,  # To mimic the same processor as pretrained one
-        steps.add_batch_dim,
+        RenameObservationsProcessorStep(rename_map={}),  # To mimic the same processor as pretrained one
+        AddBatchDimensionProcessorStep(),
         Pi0NewLineProcessor(),  # Add newlines before tokenization for PaliGemma
         TokenizerProcessorStep(
             tokenizer_name="google/paligemma-3b-pt-224",
@@ -143,15 +137,30 @@ def make_pi0_pre_post_processors(
             padding_side="right",
             padding="max_length",
         ),
-        steps.to_device,
-        relative_step,
-        steps.normalize,
+        DeviceProcessorStep(device=config.device),
+        NormalizerProcessorStep(
+            features={**config.input_features, **config.output_features},
+            norm_map=config.normalization_mapping,
+            stats=dataset_stats,
+        ),
     ]
 
     output_steps: list[ProcessorStep] = [
-        steps.unnormalize,
-        AbsoluteActionsProcessorStep(enabled=config.use_relative_actions, relative_step=relative_step),
-        steps.to_cpu,
+        UnnormalizerProcessorStep(
+            features=config.output_features, norm_map=config.normalization_mapping, stats=dataset_stats
+        ),
+        DeviceProcessorStep(device="cpu"),
     ]
 
-    return make_policy_processor_pipelines(input_steps=input_steps, output_steps=output_steps)
+    return (
+        PolicyProcessorPipeline[dict[str, Any], dict[str, Any]](
+            steps=input_steps,
+            name=POLICY_PREPROCESSOR_DEFAULT_NAME,
+        ),
+        PolicyProcessorPipeline[PolicyAction, PolicyAction](
+            steps=output_steps,
+            name=POLICY_POSTPROCESSOR_DEFAULT_NAME,
+            to_transition=policy_action_to_transition,
+            to_output=transition_to_policy_action,
+        ),
+    )
