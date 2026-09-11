@@ -68,7 +68,9 @@ lerobot-record \
 """
 
 import importlib.util
+import json
 import logging
+import tempfile
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -79,6 +81,8 @@ from typing import Any
 
 import numpy as np
 import torch
+from PIL import Image
+from safetensors.torch import load_file
 
 from lerobot.cameras import (  # noqa: F401
     CameraConfig,  # noqa: F401
@@ -95,16 +99,20 @@ from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_featur
 from lerobot.datasets.utils import build_dataset_frame, combine_feature_dicts
 from lerobot.datasets.video_utils import VideoEncodingManager
 from lerobot.policies.factory import make_policy, make_pre_post_processors
+from lerobot.policies.pi05.modeling_pi05 import resize_with_pad_torch
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.utils import make_robot_action
 from lerobot.processor import (
+    NormalizerProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
     RobotAction,
     RobotObservation,
     RobotProcessorPipeline,
+    UnnormalizerProcessorStep,
     make_default_processors,
 )
+from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
 from lerobot.processor.rename_processor import rename_stats
 from lerobot.robots import (  # noqa: F401
     Robot,
@@ -218,6 +226,8 @@ class JetsonPiConfig:
     server_url: str = "http://127.0.0.1:8080"
     # Path to the bridge client module (bridge_lerobot_local.py).
     bridge_path: str = "/home/lhs/Works/Jetson-PI-Edge/bridge_lerobot_local.py"
+    # Checkpoint directory that owns the LeRobot state/action normalization processors.
+    pretrained_path: str = "/home/lhs/weights_dataset"
     # Camera keys to send to Jetson-PI, in model order (base_0_rgb, left_wrist_0_rgb).
     image_keys: tuple[str, str] = ("global", "wrist")
     # Number of actions in one returned chunk; re-query Jetson-PI when it runs out.
@@ -234,14 +244,84 @@ def _load_bridge_client(path: str):
     return module
 
 
-class _IdentityProcessor:
-    """Pass-through policy pre/post-processor (Jetson-PI handles normalization)."""
+def _load_processor_step(
+    root: Path,
+    config_filename: str,
+    registry_name: str,
+    processor_type,
+):
+    """Load one LeRobot processor step and its saved state."""
+    config = json.loads((root / config_filename).read_text(encoding="utf-8"))
+    entries = [entry for entry in config["steps"] if entry.get("registry_name") == registry_name]
+    if len(entries) != 1:
+        raise ValueError(f"expected one {registry_name} step in {root / config_filename}")
+    entry = entries[0]
+    processor = processor_type(**entry.get("config", {}))
+    state_file = entry.get("state_file")
+    if state_file:
+        processor.load_state_dict(load_file(root / state_file))
+    return processor
 
-    def __call__(self, value):
-        return value
 
-    def reset(self) -> None:
-        pass
+def _make_jetson_pi_processors(
+    pretrained_path: str,
+) -> tuple[
+    PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
+    PolicyProcessorPipeline[PolicyAction, PolicyAction],
+]:
+    """Load LeRobot's state normalizer and action unnormalizer from a checkpoint.
+
+    The Jetson-PI server owns image preprocessing and prompt tokenization, so the
+    remote policy only needs the checkpoint's stored QUANTILES statistics.
+    """
+    root = Path(pretrained_path).expanduser().resolve()
+    normalizer = _load_processor_step(
+        root,
+        "policy_preprocessor.json",
+        "normalizer_processor",
+        NormalizerProcessorStep,
+    )
+    unnormalizer = _load_processor_step(
+        root,
+        "policy_postprocessor.json",
+        "unnormalizer_processor",
+        UnnormalizerProcessorStep,
+    )
+
+    preprocessor = PolicyProcessorPipeline[dict[str, Any], dict[str, Any]](
+        steps=[normalizer],
+        name="jetson_pi_preprocessor",
+    )
+    postprocessor = PolicyProcessorPipeline[PolicyAction, PolicyAction](
+        steps=[unnormalizer],
+        name="jetson_pi_postprocessor",
+        to_transition=policy_action_to_transition,
+        to_output=transition_to_policy_action,
+    )
+    return preprocessor, postprocessor
+
+
+IMAGE_SIZE = 224
+
+
+def _prepare_jetson_image(image: Any) -> np.ndarray:
+    """Apply LeRobot's PI0.5 resize-with-pad and return an RGB uint8 image."""
+    image = torch.as_tensor(image).detach().cpu()
+    if image.ndim == 4:
+        if image.shape[0] != 1:
+            raise ValueError(f"expected image batch size 1, got shape {tuple(image.shape)}")
+        image = image[0]
+    if image.ndim != 3:
+        raise ValueError(f"expected a 3-D image tensor, got shape {tuple(image.shape)}")
+    if image.shape[0] == 3:
+        image = image.permute(1, 2, 0)
+    elif image.shape[-1] != 3:
+        raise ValueError(f"expected an RGB image, got shape {tuple(image.shape)}")
+    image = image.to(torch.float32)
+    if image.shape[:2] != (IMAGE_SIZE, IMAGE_SIZE):
+        image = resize_with_pad_torch(image, IMAGE_SIZE, IMAGE_SIZE)
+    image = torch.round(image.clamp(0, 1) * 255).to(torch.uint8)
+    return np.ascontiguousarray(image.numpy())
 
 
 class JetsonPiChunkPolicy:
@@ -253,10 +333,12 @@ class JetsonPiChunkPolicy:
     """
 
     def __init__(self, cfg: JetsonPiConfig):
+        if cfg.chunk_size <= 0:
+            raise ValueError("jetson_pi.chunk_size must be positive")
         self.cfg = cfg
         self.config = SimpleNamespace(device="cpu", use_amp=False)
         self._client = _load_bridge_client(cfg.bridge_path)
-        self._session = self._client.JetsonPiLiberoClient(base_url=cfg.server_url, timeout=cfg.timeout)
+        self._session = self._client.JetsonPiClient(base_url=cfg.server_url, timeout=cfg.timeout)
         self._action_queue: deque = deque()
         self._needs_reset = True
 
@@ -273,9 +355,19 @@ class JetsonPiChunkPolicy:
         images = [observation[f"observation.images.{key}"] for key in self.cfg.image_keys]
         state = observation["observation.state"]
         prompt = str(observation.get("task") or "").strip().replace("_", " ").replace("\n", " ")
-        actions, _ = self._session.predict(images, state, prompt, reset=self._needs_reset)
+        with tempfile.TemporaryDirectory(prefix="lerobot_jetson_pi_") as tmp:
+            image_paths = []
+            for index, image in enumerate(images):
+                path = Path(tmp) / f"camera_{index}.png"
+                Image.fromarray(_prepare_jetson_image(image), mode="RGB").save(path)
+                image_paths.append(path)
+            actions, _ = self._session.predict(image_paths, state, prompt, reset=self._needs_reset)
+        if self.cfg.chunk_size > len(actions):
+            raise ValueError(
+                f"jetson_pi.chunk_size ({self.cfg.chunk_size}) exceeds returned actions ({len(actions)})"
+            )
         self._needs_reset = False
-        self._action_queue.extend(actions.tolist())
+        self._action_queue.extend(actions[: self.cfg.chunk_size].tolist())
 
 
 @dataclass
@@ -581,8 +673,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         postprocessor = None
         if cfg.jetson_pi is not None:
             policy = JetsonPiChunkPolicy(cfg.jetson_pi)
-            preprocessor = _IdentityProcessor()
-            postprocessor = _IdentityProcessor()
+            preprocessor, postprocessor = _make_jetson_pi_processors(cfg.jetson_pi.pretrained_path)
         elif cfg.policy is not None:
             policy = make_policy(cfg.policy, ds_meta=dataset.meta)
             preprocessor, postprocessor = make_pre_post_processors(
