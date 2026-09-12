@@ -320,6 +320,8 @@ def _prepare_jetson_image(image: Any) -> np.ndarray:
     image = image.to(torch.float32)
     if image.shape[:2] != (IMAGE_SIZE, IMAGE_SIZE):
         image = resize_with_pad_torch(image, IMAGE_SIZE, IMAGE_SIZE)
+    if image.ndim == 4:
+        image = image[0]
     image = torch.round(image.clamp(0, 1) * 255).to(torch.uint8)
     return np.ascontiguousarray(image.numpy())
 
@@ -352,15 +354,30 @@ class JetsonPiChunkPolicy:
         return torch.tensor(self._action_queue.popleft(), dtype=torch.float32).unsqueeze(0)
 
     def _request_actions(self, observation) -> None:
+        import os
         images = [observation[f"observation.images.{key}"] for key in self.cfg.image_keys]
         state = observation["observation.state"]
         prompt = str(observation.get("task") or "").strip().replace("_", " ").replace("\n", " ")
+        capture_dir = os.environ.get("JETSON_PI_CAPTURE_DIR", "")
+        if capture_dir:
+            Path(capture_dir).mkdir(parents=True, exist_ok=True)
+            self._capture_index = getattr(self, "_capture_index", 0)
         with tempfile.TemporaryDirectory(prefix="lerobot_jetson_pi_") as tmp:
             image_paths = []
             for index, image in enumerate(images):
+                prep = _prepare_jetson_image(image)
                 path = Path(tmp) / f"camera_{index}.png"
-                Image.fromarray(_prepare_jetson_image(image), mode="RGB").save(path)
+                Image.fromarray(prep, mode="RGB").save(path)
+                if capture_dir:
+                    Image.fromarray(prep, mode="RGB").save(
+                        Path(capture_dir) / f"frame_{self._capture_index:04d}_cam{index}.png"
+                    )
                 image_paths.append(path)
+            if capture_dir:
+                with open(Path(capture_dir) / f"frame_{self._capture_index:04d}_state.txt", "w") as fh:
+                    fh.write(prompt + "\n")
+                    fh.write(",".join(repr(float(v)) for v in np.asarray(state).reshape(-1)) + "\n")
+                self._capture_index += 1
             actions, _ = self._session.predict(image_paths, state, prompt, reset=self._needs_reset)
         if self.cfg.chunk_size > len(actions):
             raise ValueError(
