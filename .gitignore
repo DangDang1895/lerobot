@@ -177,3 +177,5 @@ outputs/
 *.xml
 *.part
 AGENTS.md
+datasets/
+report/
