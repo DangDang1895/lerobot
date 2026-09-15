@@ -55,10 +55,12 @@ from lerobot.utils.import_utils import _peft_available, require_package
 from .configs import BaseStrategyConfig, DAggerStrategyConfig, RolloutConfig
 from .inference import (
     InferenceEngine,
+    JetsonPiInferenceConfig,
     RTCInferenceConfig,
     SyncInferenceConfig,
     create_inference_engine,
 )
+from .inference.jetson_pi import load_jetson_pi_model, make_jetson_pi_processors
 from .inference.rtc import supports_rtc_inference
 from .robot_wrapper import ThreadSafeRobot
 
@@ -224,7 +226,7 @@ class HardwareContext:
 class PolicyContext:
     """Loaded policy and its inference engine."""
 
-    policy: PreTrainedPolicy
+    policy: PreTrainedPolicy | None
     preprocessor: PolicyProcessorPipeline
     postprocessor: PolicyProcessorPipeline
     inference: InferenceEngine
@@ -310,53 +312,83 @@ def build_rollout_context(
     fails fast without touching the robot.
     """
     is_rtc = isinstance(cfg.inference, RTCInferenceConfig)
+    is_jetson_pi = isinstance(cfg.inference, JetsonPiInferenceConfig)
 
     # --- 1. Policy (heavy I/O, but no hardware yet) -------------------
-    logger.info("Loading policy from '%s'...", cfg.policy.pretrained_path)
     policy_config = cfg.policy
+    policy: PreTrainedPolicy | None = None
+    torch_compile_active = False
+    preprocessor: PolicyProcessorPipeline | None = None
+    postprocessor: PolicyProcessorPipeline | None = None
+    jetson_pi_model = None
 
-    if is_rtc:
-        _validate_trained_rtc_rollout_config(policy_config, cfg.inference)
-
-    if hasattr(policy_config, "compile_model"):
-        policy_config.compile_model = cfg.use_torch_compile
-
-    if policy_config.type == "vqbet" and cfg.device == "mps":
-        raise NotImplementedError(
-            "Current implementation of VQBeT does not support `mps` backend. "
-            "Please use `cpu` or `cuda` backend."
+    if is_jetson_pi:
+        if cfg.use_torch_compile:
+            raise ValueError("--use_torch_compile is not supported with --inference.type=jetson_pi")
+        logger.info(
+            "Using policy metadata and processors from '%s'; Torch weights will not be loaded",
+            policy_config.pretrained_path,
         )
+        preprocessor, postprocessor = make_jetson_pi_processors(
+            policy_config.pretrained_path,
+            rename_map=cfg.rename_map,
+        )
+        logger.info("Loading Jetson-PI model before connecting hardware...")
+        jetson_pi_model = load_jetson_pi_model(
+            model_path=cfg.inference.model_path,
+            mmproj_path=cfg.inference.mmproj_path,
+            module_path=cfg.inference.module_path,
+            backend=cfg.inference.backend,
+            n_views=len(cfg.inference.image_keys),
+            image_height=cfg.inference.image_height,
+            image_width=cfg.inference.image_width,
+            n_threads=cfg.inference.n_threads,
+        )
+        logger.info("Jetson-PI model loaded")
+    else:
+        logger.info("Loading policy from '%s'...", policy_config.pretrained_path)
+        if is_rtc:
+            _validate_trained_rtc_rollout_config(policy_config, cfg.inference)
 
-    policy = _load_pretrained_policy(policy_config)
+        if hasattr(policy_config, "compile_model"):
+            policy_config.compile_model = cfg.use_torch_compile
 
-    if is_rtc:
-        if not supports_rtc_inference(policy):
-            raise ValueError(
-                f"RTC inference is not supported by policy type '{policy_config.type}': "
-                "the policy must implement RTC semantics and predict_action_chunk must accept "
-                "inference_delay and prev_chunk_left_over. Use '--inference.type=sync' instead."
+        if policy_config.type == "vqbet" and cfg.device == "mps":
+            raise NotImplementedError(
+                "Current implementation of VQBeT does not support `mps` backend. "
+                "Please use `cpu` or `cuda` backend."
             )
-        policy.config.rtc_config = cfg.inference.rtc
-        if hasattr(policy, "init_rtc_processor"):
-            policy.init_rtc_processor()
 
-    policy = policy.to(cfg.device)
-    policy.eval()
-    logger.info("Policy loaded: type=%s, device=%s", policy_config.type, cfg.device)
+        policy = _load_pretrained_policy(policy_config)
 
-    torch_compile_active = cfg.use_torch_compile
-    if cfg.use_torch_compile and policy.type not in ("pi0", "pi05"):
-        torch_compile_active = _wrap_predict_action_chunk_with_torch_compile(
-            policy,
-            backend=cfg.torch_compile_backend,
-            mode=cfg.torch_compile_mode,
-        )
+        if is_rtc:
+            if not supports_rtc_inference(policy):
+                raise ValueError(
+                    f"RTC inference is not supported by policy type '{policy_config.type}': "
+                    "the policy must implement RTC semantics and predict_action_chunk must accept "
+                    "inference_delay and prev_chunk_left_over. Use '--inference.type=sync' instead."
+                )
+            policy.config.rtc_config = cfg.inference.rtc
+            if hasattr(policy, "init_rtc_processor"):
+                policy.init_rtc_processor()
 
-    if cfg.use_torch_compile and not torch_compile_active:
-        # RolloutConfig.__post_init__ reloads the policy configuration, so avoid
-        # dataclasses.replace when carrying the effective state downstream.
-        cfg = copy(cfg)
-        cfg.use_torch_compile = False
+        policy = policy.to(cfg.device)
+        policy.eval()
+        logger.info("Policy loaded: type=%s, device=%s", policy_config.type, cfg.device)
+
+        torch_compile_active = cfg.use_torch_compile
+        if cfg.use_torch_compile and policy.type not in ("pi0", "pi05"):
+            torch_compile_active = _wrap_predict_action_chunk_with_torch_compile(
+                policy,
+                backend=cfg.torch_compile_backend,
+                mode=cfg.torch_compile_mode,
+            )
+
+        if cfg.use_torch_compile and not torch_compile_active:
+            # RolloutConfig.__post_init__ reloads the policy configuration, so avoid
+            # dataclasses.replace when carrying the effective state downstream.
+            cfg = copy(cfg)
+            cfg.use_torch_compile = False
 
     # --- 2. Robot-side processors (user-supplied or defaults) --------
     if (
@@ -540,16 +572,19 @@ def build_rollout_context(
             cfg.rename_map,
         )
 
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=policy_config,
-        pretrained_path=cfg.policy.pretrained_path,
-        pretrained_revision=policy_config.pretrained_revision,
-        dataset_stats=dataset_stats,
-        preprocessor_overrides={
-            "device_processor": {"device": cfg.device},
-            "rename_observations_processor": {"rename_map": cfg.rename_map},
-        },
-    )
+    if not is_jetson_pi:
+        preprocessor, postprocessor = make_pre_post_processors(
+            policy_cfg=policy_config,
+            pretrained_path=cfg.policy.pretrained_path,
+            pretrained_revision=policy_config.pretrained_revision,
+            dataset_stats=dataset_stats,
+            preprocessor_overrides={
+                "device_processor": {"device": cfg.device},
+                "rename_observations_processor": {"rename_map": cfg.rename_map},
+            },
+        )
+    if preprocessor is None or postprocessor is None:
+        raise RuntimeError("Policy processors were not initialized")
 
     relative_action_step = next(
         (
@@ -586,6 +621,7 @@ def build_rollout_context(
         use_torch_compile=torch_compile_active,
         compile_warmup_inferences=cfg.compile_warmup_inferences,
         shutdown_event=shutdown_event,
+        jetson_pi_model=jetson_pi_model,
     )
 
     # --- 8. Assemble ---------------------------------------------------

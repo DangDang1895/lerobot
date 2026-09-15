@@ -21,16 +21,20 @@ rollout strategies never branch on which backend is in use.
 from .base import InferenceEngine, PolicyQuery, QueryAnswer, QueryKind
 from .factory import (
     InferenceEngineConfig,
+    JetsonPiInferenceConfig,
     RTCInferenceConfig,
     SyncInferenceConfig,
     create_inference_engine,
 )
+from .jetson_pi import JetsonPiSyncInferenceEngine
 from .rtc import RTCInferenceEngine
 from .sync import SyncInferenceEngine
 
 __all__ = [
     "InferenceEngine",
     "InferenceEngineConfig",
+    "JetsonPiInferenceConfig",
+    "JetsonPiSyncInferenceEngine",
     "PolicyQuery",
     "QueryAnswer",
     "QueryKind",
