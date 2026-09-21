@@ -299,7 +299,11 @@ class JetsonPiSyncInferenceEngine(InferenceEngine):
             ),
             dtype=np.uint8,
         )
-        state = _prepare_state(observation["observation.state"], self._state_dim)
+        # PI0.5 encodes state in text: preserve the checkpoint's semantic width.
+        state_width = torch.as_tensor(observation["observation.state"]).numel()
+        if state_width > self._state_dim:
+            raise ValueError(f"Robot state dimension {state_width} exceeds model dimension {self._state_dim}")
+        state = _prepare_state(observation["observation.state"], state_width)
         prompt = task.strip().replace("_", " ").replace("\n", " ")
         if not prompt:
             raise ValueError("Task prompt must not be empty")
