@@ -309,6 +309,14 @@ class JetsonPiSyncInferenceEngine(InferenceEngine):
             raise ValueError("Task prompt must not be empty")
 
         actions = np.asarray(self._model.predict(images, prompt, state), dtype=np.float32)
+        # Timing reported by the engine itself (see jetson_pi.PIModel.last_timing).
+        timing = getattr(self._model, "last_timing", None)
+        if timing:
+            ms = lambda key: "-" if timing.get(key) is None else f"{timing[key]:.1f}"
+            logger.info(
+                "Jetson-PI timing: vit %s ms | encode %s ms | decode %s ms | total %s ms | batch_build %s ms",
+                ms("vit_ms"), ms("encode_ms"), ms("decode_ms"), ms("total_ms"), ms("batch_build_ms"),
+            )
         expected_shape = (self._action_steps, self._action_dim)
         if actions.shape != expected_shape:
             raise RuntimeError(f"Expected Jetson-PI action shape {expected_shape}, got {actions.shape}")
