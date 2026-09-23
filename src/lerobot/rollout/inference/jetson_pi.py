@@ -312,10 +312,13 @@ class JetsonPiSyncInferenceEngine(InferenceEngine):
         # Timing reported by the engine itself (see jetson_pi.PIModel.last_timing).
         timing = getattr(self._model, "last_timing", None)
         if timing:
-            ms = lambda key: "-" if timing.get(key) is None else f"{timing[key]:.1f}"
             logger.info(
-                "Jetson-PI timing: vit %s ms | encode %s ms | decode %s ms | total %s ms | batch_build %s ms",
-                ms("vit_ms"), ms("encode_ms"), ms("decode_ms"), ms("total_ms"), ms("batch_build_ms"),
+                "Jetson-PI timing (ms): vit %.1f | encode %.1f | decode %.1f | total %.1f | build %.1f",
+                timing.get("vit_ms") or 0.0,
+                timing.get("encode_ms") or 0.0,
+                timing.get("decode_ms") or 0.0,
+                timing.get("total_ms") or 0.0,
+                timing.get("batch_build_ms") or 0.0,
             )
         expected_shape = (self._action_steps, self._action_dim)
         if actions.shape != expected_shape:
